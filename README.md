@@ -122,17 +122,86 @@ docker-compose down
 
 - Python 3.10+, aiogram 3.4.1, OLLAMA, PostgreSQL, Docker
 
-## 📁 Структура
+## 📁 Структура проекту
 
 ```
 .
-├── main.py              # Точка входу
-├── config.py            # Конфігурація
-├── database.py          # База даних
-├── handlers/            # Обробники команд
-├── ollama_optimized/    # AI клієнт
-├── docker-compose.yml   # Docker конфігурація
-└── requirements.txt     # Залежності
+├── main.py                      # Точка входу, запуск бота
+├── config.py                    # Конфігурація (токени, URLs)
+├── database.py                  # Робота з PostgreSQL
+├── scheduler.py                 # Планувальник нагадувань
+├── init_db.py                   # Ініціалізація БД з початковими даними
+├── keyboards.py                 # Клавіатури Telegram
+├── knowledge_base.py            # База знань про університет
+├── ollama_client.py             # Клієнт OLLAMA (обгортка)
+├── tuition_helper.py            # Допоміжний модуль для вартості навчання
+│
+├── handlers/                    # Обробники подій
+│   ├── __init__.py             # Ініціалізація routers
+│   ├── commands.py             # Команди (/start, /help, /stats)
+│   ├── chat_handler.py         # Обробка AI-чату
+│   ├── menu_handlers.py        # Обробка кнопок меню
+│   ├── reminders.py            # Нагадування про дедлайни
+│   ├── settings.py             # Налаштування користувача
+│   ├── callbacks.py            # Inline callbacks
+│   └── utils.py                # Допоміжні функції
+│
+├── middleware/                  # Middleware
+│   ├── __init__.py
+│   ├── error_handler.py        # Обробка помилок
+│   └── logging_middleware.py   # Логування запитів
+│
+├── services/                    # Бізнес-логіка
+│   ├── __init__.py
+│   ├── knowledge_service.py    # Робота з базою знань
+│   └── response_service.py     # Генерація відповідей
+│
+├── ollama_optimized/            # Оптимізований OLLAMA клієнт
+│   ├── __init__.py
+│   ├── client.py               # Основний оптимізований клієнт
+│   ├── prompt_builder.py       # Побудова промптів
+│   ├── context_optimizer.py    # Оптимізація контексту
+│   ├── question_classifier.py  # Класифікація питань
+│   ├── cache.py                # Кешування відповідей
+│   ├── semantic_cache.py       # Семантичне кешування
+│   ├── validators/             # Валідатори
+│   │   ├── __init__.py
+│   │   └── multi_level.py      # Багаторівнева валідація
+│   └── metrics/                # Метрики
+│       ├── __init__.py
+│       └── collector.py        # Збір статистики
+│
+├── models/                      # Моделі даних
+│   ├── __init__.py
+│   └── message.py              # Модель повідомлення
+│
+├── utils/                       # Утиліти
+│   ├── __init__.py
+│   ├── message_parser.py       # Парсинг повідомлень
+│   └── text_formatter.py       # Форматування тексту
+│
+├── validators/                  # Валідатори
+│   ├── __init__.py
+│   ├── content_validator.py    # Валідація контенту
+│   └── response_validator.py   # Валідація відповідей
+│
+├── ollama_models/               # Локальні OLLAMA моделі (порожня)
+│   └── .gitkeep
+│
+├── university_files/            # Файли університету (PDF, DOCX)
+│   └── .gitkeep
+│
+├── reports/                     # Логи помилок (не в Git)
+│   └── error_reports.log
+│
+├── Dockerfile                   # Docker образ бота
+├── docker-compose.yml           # Docker Compose конфігурація
+├── .dockerignore                # Виключення для Docker
+├── .gitignore                   # Виключення для Git
+├── requirements.txt             # Python залежності
+├── run.bat                      # Скрипт запуску (Windows)
+├── run.ps1                      # PowerShell скрипт запуску
+└── README.md                    # Документація
 ```
 
 ## 📝 Ліцензія
