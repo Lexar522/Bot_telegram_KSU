@@ -196,8 +196,6 @@ docker-compose down
 │
 ├── Dockerfile                   # Docker образ бота
 ├── docker-compose.yml           # Docker Compose конфігурація
-├── .dockerignore                # Виключення для Docker
-├── .gitignore                   # Виключення для Git
 ├── requirements.txt             # Python залежності
 ├── run.bat                      # Скрипт запуску (Windows)
 ├── run.ps1                      # PowerShell скрипт запуску
