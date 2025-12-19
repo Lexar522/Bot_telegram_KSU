@@ -125,82 +125,101 @@ docker-compose down
 ## 📁 Структура проекту
 
 ```
-.
-├── main.py                      # Точка входу, запуск бота
-├── config.py                    # Конфігурація (токени, URLs)
-├── database.py                  # Робота з PostgreSQL
-├── scheduler.py                 # Планувальник нагадувань
-├── init_db.py                   # Ініціалізація БД з початковими даними
-├── keyboards.py                 # Клавіатури Telegram
-├── knowledge_base.py            # База знань про університет
-├── ollama_client.py             # Клієнт OLLAMA (обгортка)
-├── tuition_helper.py            # Допоміжний модуль для вартості навчання
+Bot_V1.3/
 │
-├── handlers/                    # Обробники подій
-│   ├── __init__.py             # Ініціалізація routers
-│   ├── commands.py             # Команди (/start, /help, /stats)
-│   ├── chat_handler.py         # Обробка AI-чату
-│   ├── menu_handlers.py        # Обробка кнопок меню
-│   ├── reminders.py            # Нагадування про дедлайни
-│   ├── settings.py             # Налаштування користувача
-│   ├── callbacks.py            # Inline callbacks
-│   └── utils.py                # Допоміжні функції
+├── 📄 Основні файли
+│   ├── main.py                  # Точка входу, запуск бота
+│   ├── config.py                # Конфігурація (токени, URLs, DB)
+│   ├── database.py              # Робота з PostgreSQL
+│   ├── scheduler.py             # Планувальник нагадувань (APScheduler)
+│   ├── init_db.py               # Ініціалізація БД з початковими даними
+│   ├── keyboards.py             # Клавіатури Telegram
+│   ├── knowledge_base.py        # База знань про університет
+│   ├── ollama_client.py         # Клієнт OLLAMA (обгортка)
+│   └── tuition_helper.py        # Допоміжний модуль для вартості навчання
 │
-├── middleware/                  # Middleware
+├── 📂 handlers/                 # Обробники подій Telegram
+│   ├── __init__.py              # Ініціалізація routers
+│   ├── commands.py              # Команди (/start, /help, /stats)
+│   ├── chat_handler.py          # Обробка AI-чату з OLLAMA
+│   ├── menu_handlers.py         # Обробка кнопок меню
+│   ├── reminders.py             # Нагадування про дедлайни
+│   ├── settings.py              # Налаштування користувача
+│   ├── callbacks.py             # Inline callbacks (кнопки)
+│   └── utils.py                 # Допоміжні функції для handlers
+│
+├── 📂 middleware/               # Middleware для aiogram
 │   ├── __init__.py
-│   ├── error_handler.py        # Обробка помилок
-│   └── logging_middleware.py   # Логування запитів
+│   ├── error_handler.py         # Обробка помилок глобально
+│   └── logging_middleware.py    # Логування запитів користувачів
 │
-├── services/                    # Бізнес-логіка
+├── 📂 services/                 # Бізнес-логіка
 │   ├── __init__.py
-│   ├── knowledge_service.py    # Робота з базою знань
-│   └── response_service.py     # Генерація відповідей
+│   ├── knowledge_service.py     # Робота з базою знань
+│   └── response_service.py      # Генерація відповідей
 │
-├── ollama_optimized/            # Оптимізований OLLAMA клієнт
+├── 📂 ollama_optimized/         # Оптимізований OLLAMA клієнт
 │   ├── __init__.py
-│   ├── client.py               # Основний оптимізований клієнт
-│   ├── prompt_builder.py       # Побудова промптів
-│   ├── context_optimizer.py    # Оптимізація контексту
-│   ├── question_classifier.py  # Класифікація питань
-│   ├── cache.py                # Кешування відповідей
-│   ├── semantic_cache.py       # Семантичне кешування
-│   ├── validators/             # Валідатори
+│   ├── client.py                # Основний оптимізований клієнт
+│   ├── prompt_builder.py        # Побудова промптів
+│   ├── context_optimizer.py     # Оптимізація контексту
+│   ├── question_classifier.py   # Класифікація питань
+│   ├── cache.py                 # Кешування відповідей
+│   ├── semantic_cache.py        # Семантичне кешування
+│   ├── validators/              # Валідатори відповідей
 │   │   ├── __init__.py
-│   │   └── multi_level.py      # Багаторівнева валідація
-│   └── metrics/                # Метрики
+│   │   └── multi_level.py       # Багаторівнева валідація
+│   └── metrics/                 # Метрики та статистика
 │       ├── __init__.py
-│       └── collector.py        # Збір статистики
+│       └── collector.py         # Збір статистики
 │
-├── models/                      # Моделі даних
+├── 📂 models/                   # Моделі даних
 │   ├── __init__.py
-│   └── message.py              # Модель повідомлення
+│   └── message.py               # Модель повідомлення
 │
-├── utils/                       # Утиліти
+├── 📂 utils/                    # Утиліти
 │   ├── __init__.py
-│   ├── message_parser.py       # Парсинг повідомлень
-│   └── text_formatter.py       # Форматування тексту
+│   ├── message_parser.py        # Парсинг повідомлень
+│   └── text_formatter.py        # Форматування тексту
 │
-├── validators/                  # Валідатори
+├── 📂 validators/               # Валідатори
 │   ├── __init__.py
-│   ├── content_validator.py    # Валідація контенту
-│   └── response_validator.py   # Валідація відповідей
+│   ├── content_validator.py     # Валідація контенту
+│   └── response_validator.py    # Валідація відповідей
 │
-├── ollama_models/               # Локальні OLLAMA моделі (порожня)
-│   └── .gitkeep
+├── 📂 ollama_models/            # Локальні OLLAMA моделі (не в Git)
+│   └── .gitkeep                 # Для збереження структури
 │
-├── university_files/            # Файли університету (PDF, DOCX)
-│   └── .gitkeep
+├── 📂 university_files/         # Файли університету (PDF, DOCX) (не в Git)
+│   └── .gitkeep                 # Для збереження структури
 │
-├── reports/                     # Логи помилок (не в Git)
-│   └── error_reports.log
+├── 📂 reports/                  # Логи помилок (не в Git)
+│   └── error_reports.log        # Приватний файл з логами
 │
-├── Dockerfile                   # Docker образ бота
-├── docker-compose.yml           # Docker Compose конфігурація
-├── requirements.txt             # Python залежності
-├── run.bat                      # Скрипт запуску (Windows)
-├── run.ps1                      # PowerShell скрипт запуску
-└── README.md                    # Документація
+├── 🐳 Docker
+│   ├── Dockerfile               # Docker образ бота
+│   ├── docker-compose.yml       # Docker Compose конфігурація
+│   └── .dockerignore            # Файли для виключення з Docker build
+│
+├── ⚙️ Конфігурація
+│   ├── .env                     # Приватний файл з токенами (НЕ В GIT!)
+│   ├── .gitignore               # Правила ігнорування файлів
+│   └── requirements.txt         # Python залежності
+│
+├── 🚀 Скрипти запуску
+│   ├── run.bat                  # Скрипт запуску (Windows)
+│   └── run.ps1                  # PowerShell скрипт запуску
+│
+└── 📚 Документація
+    └── README.md                # Цей файл
 ```
+
+### 📝 Важливі зауваження
+
+- **`.env`** - НЕ закомічений в Git (містить приватні токени)
+- **`reports/`** - Логи з помилками (НЕ в Git, містить дані користувачів)
+- **`university_files/`** - Документи університету (НЕ в Git)
+- **`ollama_models/`** - Локальні моделі OLLAMA (НЕ в Git)
 
 ## 📝 Ліцензія
 
