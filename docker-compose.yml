@@ -44,7 +44,7 @@ services:
         condition: service_healthy
     volumes:
       # Монтуємо файли університету (якщо потрібно)
-      - ./Файли університету:/app/Файли університету:ro
+      - ./university_files:/app/university_files:ro
       # Монтуємо логи
       - ./reports:/app/reports
     networks:
