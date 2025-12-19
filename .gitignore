@@ -9,9 +9,14 @@ venv/
 ENV/
 .venv
 
-# Environment variables
+# Environment variables (ПРИВАТНІ - НЕ КОМІТИТИ!)
 .env
+.env.*
+!.env.example
 .env.local
+.env.production
+.env.development
+*.env
 
 # IDE
 .vscode/
@@ -25,17 +30,26 @@ ENV/
 *.sqlite
 *.sqlite3
 
-# Logs
+# Logs (ПРИВАТНІ - можуть містити дані користувачів)
 *.log
 logs/
-reports/*.log
+reports/
+*.log.*
+error*.log
+debug*.log
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Project specific
+# Project specific (документи університету - можуть бути приватними)
 *.docx
+*.doc
+*.pdf
+*.xlsx
+*.xls
+university_files/*
+!university_files/.gitkeep
 
 # Docker
 # .dockerignore - потрібен для Docker, тому додаємо в репозиторій
@@ -49,6 +63,18 @@ ollama_models/*
 *.temp
 *.bak
 *.backup
+
+# Приватні та конфіденційні файли
+*secret*
+*private*
+*password*
+*.key
+*.pem
+*.p12
+*.cert
+*.crt
+config.local.*
+settings.local.*
 
 # Cursor/IDE debug logs
 .cursor/
