@@ -1,6 +1,3 @@
-"""
-Головний файл Telegram-бота
-"""
 import asyncio
 import logging
 import os
@@ -14,34 +11,45 @@ from handlers import router
 from ollama_client import ollama
 from scheduler import start_scheduler
 
-# Налаштування логування
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Примусово вмикаємо UTF-8 для виводу/логів у Windows-консолі
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
-        # Ігноруємо, якщо stdout не підтримує reconfigure
         pass
 
 async def ensure_ollama_running() -> bool:
-    """Перевіряє здоров'я OLLAMA та пробує запустити її, якщо вона не працює."""
     logger.info("🔍 Перевірка підключення до OLLAMA...")
     if await ollama.check_health():
         logger.info("✅ OLLAMA доступна")
         return True
 
+    is_docker = False
+    if os.path.exists("/.dockerenv"):
+        is_docker = True
+    elif os.path.exists("/proc/self/cgroup"):
+        try:
+            with open("/proc/self/cgroup", "r") as f:
+                if "docker" in f.read():
+                    is_docker = True
+        except Exception:
+            pass
+    
+    if is_docker:
+        logger.warning("⚠️ OLLAMA недоступна в Docker контейнері!")
+        logger.info(f"💡 Перевірте {OLLAMA_API_URL}")
+        return False
+
     logger.warning("⚠️ OLLAMA недоступна! Спробую запустити ollama serve...")
     creationflags = 0
     if sys.platform == "win32":
-        # Запускаємо без вікна та відокремлено від поточного процесу
         creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
 
     try:
@@ -64,31 +72,24 @@ async def ensure_ollama_running() -> bool:
     logger.info(f"💡 Перевірте {OLLAMA_API_URL} або запустіть: ollama serve")
     return False
 
-
 async def main():
-    """Головна функція запуску бота"""
-    # Перевірка токена
     if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
         logger.error("❌ BOT_TOKEN не встановлено! Перевірте файл .env")
         return
     
-    # Перевірка OLLAMA (з автостартом). Якщо не піднялась — не стартуємо бота.
     if not await ensure_ollama_running():
         logger.error("❌ OLLAMA недоступна. Бот зупинено, запустіть ollama serve та повторіть.")
         return
     
-    # Підключення до бази даних
     try:
         await db.connect()
     except Exception as e:
         logger.warning(f"⚠️ Не вдалося підключитися до БД: {e}")
         logger.info("💡 Бот працюватиме без збереження даних у БД")
     
-    # Ініціалізація бота та диспетчера
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
     
-    # Додаємо middleware
     from middleware.error_handler import ErrorHandlerMiddleware
     from middleware.logging_middleware import LoggingMiddleware
     
@@ -98,26 +99,22 @@ async def main():
     dp.callback_query.middleware(LoggingMiddleware())
     
     dp.include_router(router)
-    
-    # Запуск планувальника нагадувань
     start_scheduler()
     
     logger.info("🚀 Бот запущено!")
     
     try:
-        # Видаляємо webhook перед запуском (якщо є)
         try:
             await bot.delete_webhook(drop_pending_updates=True)
             logger.info("✅ Webhook видалено")
         except Exception as e:
             logger.warning(f"⚠️ Не вдалося видалити webhook: {e}")
         
-        # Запуск бота з очищенням очікуючих оновлень
         await dp.start_polling(
             bot, 
             allowed_updates=dp.resolve_used_update_types(),
             drop_pending_updates=True,
-            close_bot_session=False  # Не закриваємо сесію автоматично
+            close_bot_session=False
         )
     except KeyboardInterrupt:
         logger.info("👋 Бот зупинено користувачем")

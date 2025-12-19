@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: admission_bot
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres123
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres123}
     ports:
       - "5432:5432"
     volumes:
@@ -18,7 +18,57 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - bot-network
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: admission_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Перевизначення DB_HOST для Docker network
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=admission_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=${DB_PASSWORD:-postgres123}
+      # OLLAMA URL - якщо OLLAMA на хост-машині, використовуємо host.docker.internal
+      # Якщо OLLAMA в іншому контейнері - вкажіть назву сервісу
+      - OLLAMA_API_URL=${OLLAMA_API_URL:-http://host.docker.internal:11434}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Монтуємо файли університету (якщо потрібно)
+      - ./Файли університету:/app/Файли університету:ro
+      # Монтуємо логи
+      - ./reports:/app/reports
+    networks:
+      - bot-network
+    # Автоматичне створення таблиць - виконується в main.py при db.connect()
+    # init_db.py потрібно запустити окремо для початкових даних (опціонально)
+
+  # Опціонально: OLLAMA в Docker (закоментовано, розкоментуйте якщо потрібно)
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: admission_bot_ollama
+  #   restart: unless-stopped
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
 
 volumes:
   postgres_data:
+  # ollama_data:  # Розкоментуйте якщо використовуєте OLLAMA в Docker
 

@@ -28,6 +28,7 @@ ENV/
 # Logs
 *.log
 logs/
+reports/*.log
 
 # OS
 .DS_Store
@@ -36,5 +37,18 @@ Thumbs.db
 # Project specific
 *.docx
 
+# Docker
+.dockerignore
 
+# OLLAMA models (локальні файли)
+ollama_models/
 
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Cursor/IDE debug logs
+.cursor/
+debug.log

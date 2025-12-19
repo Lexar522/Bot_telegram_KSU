@@ -1,33 +1,25 @@
-"""
-Модуль для роботи з базою даних PostgreSQL
-"""
 import asyncpg
 from config import DB_CONFIG
-
 
 class Database:
     def __init__(self):
         self.pool = None
 
     async def connect(self):
-        """Підключення до бази даних"""
         try:
             self.pool = await asyncpg.create_pool(**DB_CONFIG, min_size=1, max_size=10)
             await self.create_tables()
             print("✅ Підключено до бази даних")
         except Exception as e:
             print(f"❌ Помилка підключення до БД: {e}")
-            raise  # Піднімаємо помилку далі для обробки в main.py
+            raise
 
     async def disconnect(self):
-        """Відключення від бази даних"""
         if self.pool:
             await self.pool.close()
 
     async def create_tables(self):
-        """Створення таблиць у базі даних"""
         async with self.pool.acquire() as conn:
-            # Таблиця користувачів
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -41,7 +33,6 @@ class Database:
                 )
             """)
 
-            # Таблиця нагадувань
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS reminders (
                     id SERIAL PRIMARY KEY,
@@ -53,7 +44,6 @@ class Database:
                 )
             """)
 
-            # Таблиця документів
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id SERIAL PRIMARY KEY,
@@ -65,7 +55,6 @@ class Database:
                 )
             """)
 
-            # Таблиця історії повідомлень (для контексту AI)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS message_history (
                     id SERIAL PRIMARY KEY,
@@ -76,7 +65,6 @@ class Database:
                 )
             """)
 
-            # Таблиця для оцінки відповідей
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS response_feedback (
                     id SERIAL PRIMARY KEY,
@@ -92,7 +80,6 @@ class Database:
 
     async def register_user(self, telegram_id: int, username: str = None, 
                            first_name: str = None, last_name: str = None):
-        """Реєстрація нового користувача"""
         if not self.pool:
             return
         async with self.pool.acquire() as conn:
@@ -108,7 +95,6 @@ class Database:
             """, telegram_id, username, first_name, last_name)
 
     async def get_user(self, telegram_id: int):
-        """Отримання інформації про користувача"""
         if not self.pool:
             return None
         async with self.pool.acquire() as conn:
@@ -117,7 +103,6 @@ class Database:
             )
 
     async def update_specialization(self, telegram_id: int, specialization: str):
-        """Оновлення спеціалізації користувача"""
         if not self.pool:
             return
         async with self.pool.acquire() as conn:
@@ -127,7 +112,6 @@ class Database:
             )
 
     async def add_reminder(self, telegram_id: int, deadline_date: str, deadline_name: str):
-        """Додавання нагадування"""
         if not self.pool:
             return
         async with self.pool.acquire() as conn:
@@ -137,7 +121,6 @@ class Database:
             """, telegram_id, deadline_date, deadline_name)
 
     async def get_user_reminders(self, telegram_id: int):
-        """Отримання нагадувань користувача"""
         if not self.pool:
             return []
         async with self.pool.acquire() as conn:
@@ -147,7 +130,6 @@ class Database:
             )
 
     async def save_message_history(self, telegram_id: int, user_message: str, bot_response: str):
-        """Збереження історії повідомлень"""
         if not self.pool:
             return None
         async with self.pool.acquire() as conn:
@@ -159,7 +141,6 @@ class Database:
             return message_id
 
     async def get_recent_messages(self, telegram_id: int, limit: int = 5):
-        """Отримання останніх повідомлень для контексту"""
         if not self.pool:
             return []
         async with self.pool.acquire() as conn:
@@ -172,7 +153,6 @@ class Database:
             """, telegram_id, limit)
 
     async def save_feedback(self, user_id: int, message_history_id: int, feedback_type: str):
-        """Збереження оцінки відповіді"""
         if not self.pool:
             return
         async with self.pool.acquire() as conn:
@@ -183,7 +163,6 @@ class Database:
             """, user_id, message_history_id, feedback_type)
 
     async def get_message_history_by_id(self, message_history_id: int):
-        """Отримання запису історії повідомлень за id"""
         if not self.pool:
             return None
         async with self.pool.acquire() as conn:
@@ -194,7 +173,6 @@ class Database:
             """, message_history_id)
 
     async def get_user_stats(self, telegram_id: int):
-        """Отримання статистики користувача"""
         if not self.pool:
             return {
                 "questions_count": 0,
@@ -203,22 +181,18 @@ class Database:
                 "last_activity": None
             }
         async with self.pool.acquire() as conn:
-            # Кількість питань
             questions_count = await conn.fetchval("""
                 SELECT COUNT(*) FROM message_history WHERE user_id = $1
             """, telegram_id)
             
-            # Кількість нагадувань
             reminders_count = await conn.fetchval("""
                 SELECT COUNT(*) FROM reminders WHERE user_id = $1 AND is_sent = FALSE
             """, telegram_id)
             
-            # Дата реєстрації
             registration_date = await conn.fetchval("""
                 SELECT registration_date FROM users WHERE telegram_id = $1
             """, telegram_id)
             
-            # Остання активність
             last_activity = await conn.fetchval("""
                 SELECT MAX(created_at) FROM message_history WHERE user_id = $1
             """, telegram_id)
@@ -231,7 +205,6 @@ class Database:
             }
 
     async def get_message_history_with_ids(self, telegram_id: int, limit: int = 10):
-        """Отримання історії повідомлень з ID"""
         if not self.pool:
             return []
         async with self.pool.acquire() as conn:
@@ -244,7 +217,6 @@ class Database:
             """, telegram_id, limit)
 
     async def delete_reminder(self, reminder_id: int, user_id: int):
-        """Видалення нагадування"""
         if not self.pool:
             return
         async with self.pool.acquire() as conn:
@@ -253,6 +225,5 @@ class Database:
             """, reminder_id, user_id)
 
 
-# Глобальний екземпляр бази даних
 db = Database()
 
