@@ -38,10 +38,11 @@ Thumbs.db
 *.docx
 
 # Docker
-.dockerignore
+# .dockerignore - потрібен для Docker, тому додаємо в репозиторій
 
-# OLLAMA models (локальні файли)
-ollama_models/
+# OLLAMA models (локальні файли - ігноруємо вміст, але зберігаємо структуру)
+ollama_models/*
+!ollama_models/.gitkeep
 
 # Temporary files
 *.tmp
