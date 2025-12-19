@@ -1,0 +1,1616 @@
+"""
+Обробники повідомлень та команд
+"""
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from database import db
+from ollama_client import ollama
+from knowledge_base import (
+    get_knu_contacts,
+    get_faculties_list,
+    get_faculty_specialties,
+    search_admission_2026_by_keyword,
+    get_admission_2026_info,
+)
+from keyboards import (
+    get_main_menu, get_specializations_keyboard, 
+    get_back_keyboard, get_settings_keyboard,
+    get_feedback_keyboard, get_reminders_management_keyboard,
+    get_quick_actions_keyboard, get_faculties_keyboard
+)
+from services.response_service import ResponseService
+from utils.message_parser import MessageParser
+from datetime import datetime
+import asyncio
+import logging
+import json
+import time
+import os
+
+logger = logging.getLogger(__name__)
+
+router = Router()
+
+# Ініціалізація сервісів
+response_service = ResponseService()
+message_parser = MessageParser()
+
+# region agent log helper (debug)
+from pathlib import Path
+
+DEBUG_LOG_PATH = os.getenv(
+    "DEBUG_LOG_PATH",
+    str(Path(__file__).parent / ".cursor" / "debug.log")
+)
+
+def _agent_log(hypothesis_id: str, location: str, message: str, data: dict):
+    try:
+        payload = {
+            "sessionId": "debug-session",
+            "runId": "run1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        os.makedirs(os.path.dirname(DEBUG_LOG_PATH), exist_ok=True)
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# endregion
+
+# Форматує структуровану інформацію про вступ 2026 в коротку відповідь
+def _format_admission_2026(info: dict) -> str:
+    parts = []
+    parts.append("📘 Правила вступу до ХДУ у 2026 році")
+    if info.get("description"):
+        parts.append(info["description"])
+
+    nmt = info.get("nmt", {})
+    if nmt:
+        subjects = nmt.get("subjects", [])
+        if subjects:
+            parts.append("🧪 НМТ: три предмети (1 обов'язковий + 2 на вибір):")
+            parts.extend([f" • {s}" for s in subjects])
+        if nmt.get("valid_years"):
+            years = ", ".join(str(y) for y in nmt["valid_years"])
+            parts.append(f"📅 Результати НМТ враховуються за {years}")
+
+    traj = info.get("trajectories", {})
+    if traj:
+        tparts = []
+        for key, val in traj.items():
+            if isinstance(val, str):
+                tparts.append(f" • {val}")
+        if tparts:
+            parts.append("🎯 Траєкторії вступу:")
+            parts.extend(tparts)
+
+    campaign = info.get("campaign", {})
+    if campaign:
+        if campaign.get("period"):
+            parts.append(f"⏰ Період кампанії: {campaign['period']}")
+        if campaign.get("important"):
+            parts.append(f"❗ Важливо: {campaign['important']}")
+        if campaign.get("advice"):
+            parts.append(f"ℹ️ Порада: {campaign['advice']}")
+
+    cabinet = info.get("electronic_cabinets", {})
+    if cabinet:
+        if cabinet.get("platform"):
+            parts.append(f"💻 Е-кабінет: {cabinet['platform']}")
+        if cabinet.get("note"):
+            parts.append(f"🔐 {cabinet['note']}")
+        if cabinet.get("support"):
+            parts.append(f"🆘 {cabinet['support']}")
+
+    support = info.get("support", {})
+    if support:
+        if support.get("defenders"):
+            parts.append(f"🎖️ Захисники: {support['defenders']}")
+        if support.get("tot"):
+            parts.append(f"🏠 ТОТ: {support['tot']}")
+        if support.get("contacts"):
+            parts.append(f"☎️ Контакти підтримки: {support['contacts']}")
+
+    if info.get("important_note"):
+        parts.append(f"📌 {info['important_note']}")
+
+    parts.append("📞 Приймальна комісія ХДУ: +380 552 494375, +38 095 59 29 149, +38 096 61 30 516")
+    return "\n".join(parts)
+
+def _check_and_fix_forbidden_universities(response: str, user_message: str) -> str:
+    """
+    КРИТИЧНО ВАЖЛИВА ФУНКЦІЯ: Перевіряє відповідь на заборонені університети
+    Якщо знайдено - АВТОМАТИЧНО замінює на правильну відповідь з бази знань
+    """
+    import re
+    response_lower = response.lower()
+    user_message_lower = user_message.lower()
+    
+    # ВСІ заборонені університети (повний список!)
+    forbidden_patterns = [
+        r"хнту[^.]*", r"івана сікорського[^.]*", r"сікорського[^.]*",
+        r"харківський[^.]*університет[^.]*", r"\bхну\b", r"харну[^.]*",
+        r"київський[^.]*університет[^.]*", r"\bкну\b", r"\bкпі\b",
+        r"львівський[^.]*університет[^.]*", r"одеський[^.]*університет[^.]*",
+        r"білосток[^.]*", r"міцкевич[^.]*", r"леся победимова[^.]*",
+        r"дніпровський[^.]*університет[^.]*", r"запорізький[^.]*університет[^.]*"
+    ]
+    
+    # Перевіряємо чи є заборонені університети
+    has_forbidden = False
+    for pattern in forbidden_patterns:
+        if re.search(pattern, response_lower, re.IGNORECASE):
+            has_forbidden = True
+            break
+    
+    # Якщо знайдено заборонені університети - ЗАМІНЮЄМО на правильну відповідь
+    if has_forbidden:
+        # Визначаємо тип питання для правильної відповіді
+        if any(word in user_message_lower for word in ["програмування", "програміст", "іт", "інформатика", "комп'ютер", "програмне", "121", "f6", "f2", "f3"]):
+            return "В ХДУ є такі спеціальності з програмування та інформаційних технологій: Інженерія програмного забезпечення (F2), Комп'ютерні науки (F3), Інформаційні системи та технології (F6, код 121). Детальніше: +380 552 494375 💻"
+        
+        elif any(word in user_message_lower for word in ["медицина", "медичні", "лікар", "фармація", "реабілітація"]):
+            return "В ХДУ є такі спеціальності з охорони здоров'я: Фізична терапія, ерготерапія (бакалавр), Соціальна робота та консультування (бакалавр), Медицина (магістр), Фізична реабілітація (магістр), Фармація (магістр). Детальніше: +380 552 494375 🏥"
+        
+        elif any(word in user_message_lower for word in ["освіта", "педагогіка", "вчитель", "дошкільна", "початкова"]):
+            return "В ХДУ є такі спеціальності з освіти та педагогіки: Дошкільна освіта, Початкова освіта, Спеціальна освіта (Логопедія, Олігофренопедагогіка), Середня освіта (різні спеціалізації), Фізична культура і спорт. Детальніше: +380 552 494375 🎓"
+        
+        elif any(word in user_message_lower for word in ["право", "юрист", "юриспруденція"]):
+            return "В ХДУ є спеціальність Право (D8) на рівнях бакалавра та магістра. Детальніше: +380 552 494375 ⚖️"
+        
+        elif any(word in user_message_lower for word in ["економіка", "бізнес", "менеджмент", "фінанси"]):
+            return "В ХДУ є такі спеціальності з бізнесу та економіки: Економіка (С1.01), Менеджмент (D3), Фінанси, банківська справа та страхування (D2), Підприємництво та торгівля (D7). Детальніше: +380 552 494375 💼"
+        
+        elif any(word in user_message_lower for word in ["психологія", "психолог"]):
+            return "В ХДУ є спеціальність Психологія (С4) на рівнях бакалавра та магістра. Детальніше: +380 552 494375 🧠"
+        
+        elif any(word in user_message_lower for word in ["спеціальності", "спеціальність", "факультети", "факультет"]):
+            # Загальне питання про спеціальності
+            return "В ХДУ є 8 факультетів з широким спектром спеціальностей у галузях: освіта та педагогіка, культура та мистецтво, соціальні науки, бізнес та право, природничі науки, інформаційні технології, охорона здоров'я, транспорт та послуги. Обери факультет для перегляду спеціальностей 🎓"
+        
+        else:
+            # Загальна відповідь якщо не вдалося визначити тип
+            return "На жаль, не вдалося сформувати коректну відповідь. Звернися до приймальної комісії ХДУ за телефоном +380 552 494375 для отримання актуальної інформації."
+    
+    return response  # Якщо все добре - повертаємо оригінальну відповідь
+
+
+def _convert_markdown_to_html(text: str) -> str:
+    """
+    Конвертує markdown форматування в HTML для Telegram
+    
+    Args:
+        text: Текст з markdown форматуванням
+    
+    Returns:
+        Текст з HTML форматуванням
+    """
+    import re
+    
+    if not text:
+        return text
+    
+    # Спочатку обробляємо маркери списку на початку рядка (щоб не конфліктували з форматуванням)
+    text = re.sub(r'^\s*\*\s+', '• ', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*-\s+', '• ', text, flags=re.MULTILINE)
+    
+    # Обробляємо жирний текст (**текст**)
+    # Використовуємо non-greedy match для правильного обробки вкладених тегів
+    text = re.sub(r'\*\*([^*]+?)\*\*', r'<b>\1</b>', text)
+    
+    # Обробляємо курсив (*текст*), але тільки якщо це не маркер списку
+    # Перевіряємо, що зірочка не на початку рядка і не є частиною **
+    text = re.sub(r'(?<!\*)\*([^*\n\s][^*\n]*?[^*\n\s])\*(?!\*)', r'<i>\1</i>', text)
+    
+    # Видаляємо залишкові одинарні зірочки, які не є частиною форматування
+    # (якщо вони не на початку рядка і не є частиною **)
+    text = re.sub(r'(?<!\*)\*(?!\*)(?![*<b>i>])', '', text)
+    
+    # Видаляємо подвійні порожні рядки
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
+
+# FSM стани для створення нагадувань
+class ReminderStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_date = State()
+
+
+@router.message(CommandStart())
+async def cmd_start(message: Message):
+    """Обробка команди /start"""
+    user = message.from_user
+    
+    # Реєстрація користувача
+    await db.register_user(
+        telegram_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name
+    )
+    
+    welcome_text = (
+        f"👋 <b>Вітаю, {user.first_name}!</b>\n\n"
+        "Я - твій інтелектуальний помічник абітурієнта "
+        "<b>Херсонського державного університету (ХДУ)</b>.\n\n"
+        "<b>Що я можу:</b>\n"
+        "💬 Відповісти на питання про вступ\n"
+        "📚 Надати персональні поради\n"
+        "📄 Розповісти про документи\n"
+        "📞 Допомогти з контактами\n"
+        "⏰ Нагадати про важливі дати\n"
+        "📊 Показати твою статистику\n\n"
+        "Обери опцію з меню або просто напиши питання! 👇"
+    )
+    
+    await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    """Обробка команди /help"""
+    help_text = (
+        "📖 Довідка по боту ХДУ:\n\n"
+        "/start - Почати роботу з ботом\n"
+        "/help - Показати цю довідку\n"
+        "/stats - Статистика користувача\n"
+        "/history - Історія діалогів\n"
+        "/advice - Отримати поради щодо вступу до ХДУ\n"
+        "/documents - Переглянути список документів для ХДУ\n"
+        "/contacts - Контакти приймальної комісії ХДУ\n"
+        "/reminders - Мої нагадування\n\n"
+        "Або використовуй кнопки меню для навігації!\n\n"
+        "💡 Цей бот допомагає з вступом до <b>Херсонського державного університету (ХДУ)</b>"
+    )
+    await message.answer(help_text, reply_markup=get_main_menu(), parse_mode="HTML")
+
+
+@router.message(Command("contacts"))
+async def cmd_contacts(message: Message):
+    """Обробка команди /contacts"""
+    contacts = get_knu_contacts()
+    await message.answer(contacts, reply_markup=get_main_menu())
+
+
+@router.message(F.text.in_(["📚 Поради", "📚 Поради щодо вступу"]))
+async def get_advice_handler(message: Message):
+    """Обробка запиту на поради"""
+    await message.answer("⏳ Формую персональні поради для тебе...")
+    
+    # Отримуємо спеціалізацію користувача
+    user = await db.get_user(message.from_user.id)
+    specialization = user.get("specialization") if user else None
+    
+    # Формуємо структуровану відповідь вручну
+    response_text = "📚 <b>Поради щодо вступу до ХДУ</b>\n\n"
+    
+    # 1. Заява для вступу до ХДУ
+    response_text += "<b>Заява для вступу до ХДУ</b>\n\n"
+    response_text += "Для подачі заяви потрібні такі документи:\n"
+    response_text += "• Заява (за встановленою формою ХДУ)\n"
+    response_text += "• Документ про освіту (оригінал або копія)\n"
+    response_text += "• Додаток до документа про освіту\n"
+    response_text += "• Фото 3x4 (4 шт.)\n"
+    response_text += "• Копія паспорта (1-2 сторінки)\n"
+    response_text += "• Копія ідентифікаційного коду\n"
+    response_text += "• Медична довідка (форма 086-о)\n"
+    response_text += "• Результати ЗНО (сертифікат)\n"
+    response_text += "• Документи про особливі права (якщо є)\n\n"
+    response_text += "<i>Важливо:</i> Перевір актуальний список на офіційному сайті ХДУ або звернися до приймальної комісії.\n\n"
+    
+    # 2. Важливі дати для вступу
+    response_text += "<b>Важливі дати для вступу</b>\n\n"
+    response_text += "• Подача документів: згідно з графіком МОН України\n"
+    response_text += "• Конкурсний відбір: після завершення подачі документів\n"
+    response_text += "• Вартість навчання 2025-2026 навчального року: уточнюй в приймальній комісії\n"
+    response_text += "• Дедлайн: передбачається під час подачі заявки\n\n"
+    
+    # 3. Контакти приймальної комісії
+    response_text += "<b>Контакти приймальної комісії</b>\n\n"
+    response_text += "• Телефон: +380 552 494375\n"
+    response_text += "• Телефон: +38 095 59 29 149\n"
+    response_text += "• Телефон: +38 096 61 30 516\n"
+    response_text += "• Адреса: м. Херсон, вул. Університетська, 27\n\n"
+    
+    # Додаємо інформацію про рік навчання для вартості
+    response_text += "<b>📅 Важливо:</b>\n"
+    response_text += "• Вартість навчання вказана для <b>2025-2026 навчального року</b>\n"
+    response_text += "• Для уточнення актуальної вартості звернися до приймальної комісії\n\n"
+    
+    # Якщо спеціалізація не встановлена, пропонуємо її встановити
+    if not specialization:
+        response_text += "💡 <i>Порада:</i> Встанови свою спеціалізацію в налаштуваннях для більш персоналізованих порад!"
+    
+    await message.answer(response_text, reply_markup=get_main_menu(), parse_mode="HTML")
+
+
+@router.message(F.text.in_(["📄 Документи", "📄 Список документів"]))
+async def get_documents_handler(message: Message):
+    """Обробка запиту на список документів"""
+    documents_text = (
+        "📄 <b>Список необхідних документів для вступу до ХДУ:</b>\n\n"
+        "1. 📝 Заява (за встановленою формою ХДУ)\n"
+        "2. 📜 Документ про освіту (оригінал або копія)\n"
+        "3. 📋 Додаток до документа про освіту\n"
+        "4. 📸 Фото 3x4 (4 шт.)\n"
+        "5. 🆔 Копія паспорта (1-2 сторінки)\n"
+        "6. 📄 Копія ідентифікаційного коду\n"
+        "7. 🏥 Медична довідка (форма 086-о)\n"
+        "8. 📊 Результати ЗНО (сертифікат)\n"
+        "9. 📑 Документи про особливі права (якщо є)\n\n"
+        "💡 <i>Важливо:</i> Перевір актуальний список на офіційному сайті ХДУ або звернися до приймальної комісії!"
+    )
+    
+    await message.answer(documents_text, reply_markup=get_main_menu(), parse_mode="HTML")
+
+
+@router.message(F.text.in_(["⏰ Нагадування", "⏰ Мої нагадування"]))
+async def get_reminders_handler(message: Message):
+    """Обробка запиту на нагадування"""
+    reminders = await db.get_user_reminders(message.from_user.id)
+    
+    if not reminders:
+        text = (
+            "⏰ <b>Мої нагадування</b>\n\n"
+            "У тебе поки немає активних нагадувань.\n\n"
+            "💡 <i>Порада:</i> Створи нагадування через кнопку нижче!"
+        )
+    else:
+        text = "⏰ <b>Мої нагадування:</b>\n\n"
+        for reminder in reminders:
+            deadline_date = reminder['deadline_date']
+            deadline_name = reminder['deadline_name']
+            is_sent = "✅" if reminder['is_sent'] else "⏳"
+            text += f"{is_sent} {deadline_name} - {deadline_date.strftime('%d.%m.%Y')}\n"
+    
+    await message.answer(text, reply_markup=get_reminders_management_keyboard(), parse_mode="HTML")
+
+
+@router.message(F.text.in_(["📞 Контакти", "📞 Контакти ХДУ"]))
+async def contacts_handler(message: Message):
+    """Обробка запиту на контакти"""
+    contacts = get_knu_contacts()
+    await message.answer(contacts, reply_markup=get_main_menu())
+
+
+@router.message(F.text.in_(["💬 Задати питання", "💬 Інше питання"]))
+async def ask_question_handler(message: Message):
+    """Обробка запиту на питання"""
+    await message.answer(
+        "💬 <b>Задай своє питання про вступ до ХДУ</b>\n\n"
+        "Я допоможу з:\n"
+        "• Документами для вступу\n"
+        "• Спеціальностями та вартістю навчання\n"
+        "• Вступною кампанією\n"
+        "• Підготовкою до вступу\n\n"
+        "Просто напиши своє питання 👇",
+        reply_markup=get_back_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.message(F.text == "⚙️ Налаштування")
+async def settings_handler(message: Message):
+    """Обробка налаштувань"""
+    user = await db.get_user(message.from_user.id)
+    specialization = user.get("specialization") if user else None
+    
+    text = "⚙️ <b>Налаштування</b>\n\n"
+    if specialization:
+        text += f"🎯 Твоя спеціалізація: {specialization}\n\n"
+    else:
+        text += "🎯 Спеціалізація не встановлена\n\n"
+    
+    text += "Оберіть опцію:"
+    
+    await message.answer(text, reply_markup=get_settings_keyboard(), parse_mode="HTML")
+
+
+@router.message(F.text.in_(["🎯 Спеціалізація", "🎯 Змінити спеціалізацію"]))
+async def change_specialization_handler(message: Message):
+    """Обробка зміни спеціалізації"""
+    await message.answer(
+        "🎯 Оберіть свою спеціалізацію:",
+        reply_markup=get_specializations_keyboard()
+    )
+
+
+@router.message(F.text.in_(["🔔 Нагадування", "🔔 Увімкнути/вимкнути нагадування"]))
+async def toggle_reminders_handler(message: Message):
+    """Обробка увімкнення/вимкнення нагадувань"""
+    # Показуємо меню нагадувань
+    await message.answer(
+        "⏰ <b>Управління нагадуваннями</b>\n\n"
+        "Тут ти можеш створити нові нагадування або переглянути існуючі.",
+        reply_markup=get_reminders_management_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.message(F.text.in_([
+    "💻 IT", "💻 Інформаційні технології", "🏥 Медицина", "⚖️ Право",
+    "💰 Економіка", "🎓 Педагогіка", "🔬 Природничі науки", 
+    "📝 Інша", "📝 Інша спеціалізація"
+]))
+async def set_specialization_handler(message: Message):
+    """Встановлення спеціалізації"""
+    specialization_map = {
+        "💻 IT": "Інформаційні технології",
+        "💻 Інформаційні технології": "Інформаційні технології",
+        "🏥 Медицина": "Медицина",
+        "⚖️ Право": "Право",
+        "💰 Економіка": "Економіка",
+        "🎓 Педагогіка": "Педагогіка",
+        "🔬 Природничі науки": "Природничі науки",
+        "📝 Інша": "Інша",
+        "📝 Інша спеціалізація": "Інша"
+    }
+    
+    specialization = specialization_map.get(message.text, message.text)
+    await db.update_specialization(message.from_user.id, specialization)
+    
+    await message.answer(
+        f"✅ Спеціалізацію встановлено: {specialization}\n\n"
+        "Тепер ти отримуватимеш більш персоналізовані поради!",
+        reply_markup=get_main_menu()
+    )
+
+
+@router.message(F.text == "⬅️ Назад")
+async def back_handler(message: Message):
+    """Обробка кнопки 'Назад'"""
+    await message.answer("Повертаємось до головного меню 👇", reply_markup=get_main_menu())
+
+
+@router.message(F.text == "🏠 Головне меню")
+async def main_menu_handler(message: Message):
+    """Повернення до головного меню"""
+    await message.answer(
+        "🏠 <b>Головне меню</b>\n\n"
+        "Оберіть опцію:",
+        reply_markup=get_main_menu(),
+        parse_mode="HTML"
+    )
+
+
+@router.message(F.text.in_(["📊 Статистика", "/stats"]))
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    """Статистика користувача"""
+    stats = await db.get_user_stats(message.from_user.id)
+    
+    stats_text = (
+        "📊 <b>Твоя статистика:</b>\n\n"
+        f"💬 Задано питань: {stats['questions_count']}\n"
+        f"⏰ Активних нагадувань: {stats['reminders_count']}\n"
+    )
+    
+    if stats['registration_date']:
+        stats_text += f"📅 Дата реєстрації: {stats['registration_date'].strftime('%d.%m.%Y')}\n"
+    
+    if stats['last_activity']:
+        stats_text += f"🕐 Остання активність: {stats['last_activity'].strftime('%d.%m.%Y %H:%M')}\n"
+    
+    await message.answer(stats_text, reply_markup=get_main_menu(), parse_mode="HTML")
+
+
+@router.message(F.text.in_(["📜 Історія", "/history"]))
+@router.message(Command("history"))
+async def cmd_history(message: Message):
+    """Історія діалогів"""
+    history = await db.get_message_history_with_ids(message.from_user.id, limit=10)
+    
+    if not history:
+        await message.answer(
+            "📜 Історія діалогів порожня.\n\n"
+            "Почни діалог, задавши питання! 💬",
+            reply_markup=get_main_menu()
+        )
+        return
+    
+    text = "📜 <b>Останні питання та відповіді:</b>\n\n"
+    
+    for i, msg in enumerate(reversed(history), 1):
+        question = msg['user_message'][:60] + "..." if len(msg['user_message']) > 60 else msg['user_message']
+        answer = msg['bot_response'][:60] + "..." if len(msg['bot_response']) > 60 else msg['bot_response']
+        text += f"<b>{i}.</b> {question}\n   → {answer}\n\n"
+        
+        if len(text) > 3500:  # Обмеження Telegram
+            text += "... (показано перші записи)"
+            break
+    
+    await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
+
+
+@router.message(F.text.in_(["➕ Створити", "➕ Створити нагадування"]))
+async def create_reminder_start(message: Message, state: FSMContext):
+    """Початок створення нагадування"""
+    await message.answer(
+        "📝 <b>Створення нагадування</b>\n\n"
+        "Введи назву нагадування (наприклад: 'Подача документів'):",
+        reply_markup=get_back_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(ReminderStates.waiting_for_name)
+
+
+@router.message(ReminderStates.waiting_for_name)
+async def process_reminder_name(message: Message, state: FSMContext):
+    """Обробка назви нагадування"""
+    if message.text == "⬅️ Назад":
+        await state.clear()
+        await message.answer("Повертаємось до головного меню 👇", reply_markup=get_main_menu())
+        return
+    
+    await state.update_data(name=message.text)
+    await message.answer(
+        "📅 Тепер введи дату у форматі <b>ДД.ММ.РРРР</b> (наприклад: 15.07.2024):",
+        reply_markup=get_back_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(ReminderStates.waiting_for_date)
+
+
+@router.message(ReminderStates.waiting_for_date)
+async def process_reminder_date(message: Message, state: FSMContext):
+    """Обробка дати нагадування"""
+    if message.text == "⬅️ Назад":
+        await state.clear()
+        await message.answer("Повертаємось до головного меню 👇", reply_markup=get_main_menu())
+        return
+    
+    try:
+        date_str = message.text.strip()
+        deadline_date = datetime.strptime(date_str, "%d.%m.%Y").date()
+        
+        # Перевірка, чи дата не в минулому
+        if deadline_date < datetime.now().date():
+            await message.answer(
+                "❌ Дата не може бути в минулому! Введи майбутню дату у форматі ДД.ММ.РРРР:",
+                reply_markup=get_back_keyboard()
+            )
+            return
+        
+        data = await state.get_data()
+        reminder_name = data.get("name")
+        
+        await db.add_reminder(message.from_user.id, deadline_date, reminder_name)
+        
+        await message.answer(
+            f"✅ <b>Нагадування створено!</b>\n\n"
+            f"📝 Назва: {reminder_name}\n"
+            f"📅 Дата: {deadline_date.strftime('%d.%m.%Y')}\n\n"
+            f"Я нагадаю тобі за 7, 3 та 1 день до цієї дати! ⏰",
+            reply_markup=get_main_menu(),
+            parse_mode="HTML"
+        )
+        await state.clear()
+    except ValueError:
+        await message.answer(
+            "❌ Невірний формат дати! Введи дату у форматі <b>ДД.ММ.РРРР</b> (наприклад: 15.07.2024):",
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+
+
+@router.message(F.text.in_(["📋 Список", "📋 Мої нагадування"]))
+async def list_reminders_handler(message: Message):
+    """Список нагадувань"""
+    reminders = await db.get_user_reminders(message.from_user.id)
+    
+    if not reminders:
+        await message.answer(
+            "⏰ У тебе поки немає активних нагадувань.\n\n"
+            "Створи нове нагадування через кнопку '➕ Створити нагадування'!",
+            reply_markup=get_reminders_management_keyboard()
+        )
+        return
+    
+    text = "📋 <b>Мої нагадування:</b>\n\n"
+    for reminder in reminders:
+        deadline_date = reminder['deadline_date']
+        deadline_name = reminder['deadline_name']
+        is_sent = "✅" if reminder['is_sent'] else "⏳"
+        days_left = (deadline_date - datetime.now().date()).days
+        text += f"{is_sent} <b>{deadline_name}</b>\n"
+        text += f"   📅 {deadline_date.strftime('%d.%m.%Y')} ({days_left} днів)\n\n"
+    
+    await message.answer(text, reply_markup=get_reminders_management_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("faculty_"))
+async def faculty_handler(callback: CallbackQuery):
+    """Обробка вибору факультету"""
+    try:
+        faculty_id = callback.data  # Наприклад, "faculty_1"
+        
+        # Отримуємо спеціальності факультету
+        specialties = get_faculty_specialties(faculty_id)
+        
+        if specialties:
+            # Зберігаємо відповідь в історію
+            message_history_id = await db.save_message_history(
+                callback.from_user.id,
+                f"Вибір факультету: {faculty_id}",
+                specialties
+            )
+            
+            # Відправляємо відповідь
+            await callback.message.edit_text(
+                specialties,
+                reply_markup=get_feedback_keyboard(message_history_id) if message_history_id else None,
+                parse_mode="HTML"
+            )
+            await callback.answer()
+        else:
+            await callback.answer("Факультет не знайдено", show_alert=True)
+    except Exception as e:
+        logger.error(f"Помилка обробки вибору факультету: {e}")
+        await callback.answer("Помилка при обробці", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("report_"))
+async def report_error_handler(callback: CallbackQuery):
+    """Обробка кнопки 'Повідомити про помилку'"""
+    data = callback.data
+    parts = data.split("_")
+    if len(parts) < 2:
+        await callback.answer("Некоректні дані", show_alert=True)
+        return
+    message_history_id = int(parts[1])
+    
+    try:
+        # Отримуємо запис історії
+        history_row = await db.get_message_history_by_id(message_history_id)
+        if not history_row:
+            await callback.answer("Запис не знайдено", show_alert=True)
+            return
+        
+        user_id = history_row["user_id"]
+        user_message = history_row["user_message"]
+        bot_response = history_row["bot_response"]
+        
+        # Логуємо у файл reports/error_reports.log
+        import os
+        from datetime import datetime
+        reports_dir = os.path.join(os.getcwd(), "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        report_path = os.path.join(reports_dir, "error_reports.log")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = (
+            f"[{timestamp}] user_id={user_id}, history_id={message_history_id}\n"
+            f"User: {user_message}\n"
+            f"Bot: {bot_response}\n"
+            f"---\n"
+        )
+        with open(report_path, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+        
+        # Фіксуємо у БД як feedback типу 'report' (для статистики)
+        await db.save_feedback(callback.from_user.id, message_history_id, "report")
+        
+        await callback.answer("Дякую! Записав помилку 🚩", show_alert=False)
+    except Exception as e:
+        logger.error(f"Помилка збереження звіту: {e}")
+        await callback.answer("Помилка при збереженні звіту", show_alert=True)
+
+
+@router.message()
+async def chat_handler(message: Message):
+    """Обробка звичайних повідомлень (чат з AI)"""
+    user_message = message.text
+    # region agent log
+    _agent_log(
+        hypothesis_id="H0",
+        location="handlers.py:chat_handler:entry",
+        message="chat entry",
+        data={"user_message": (user_message or "")[:200]}
+    )
+    # endregion
+    
+    # Перевіряємо, чи це не команда
+    if not user_message or user_message.startswith("/"):
+        return
+    
+    # Список кнопок меню, які не повинні оброблятися як питання
+    menu_buttons = [
+        # Головне меню
+        "📚 Поради", "📚 Поради щодо вступу",
+        "📄 Документи", "📄 Список документів",
+        "📞 Контакти", "📞 Контакти ХДУ",
+        "⏰ Нагадування", "⏰ Мої нагадування",
+        "💬 Задати питання",
+        "📊 Статистика",
+        "⚙️ Налаштування",
+        # Навігація
+        "⬅️ Назад",
+        "🏠 Головне меню",
+        # Налаштування
+        "🎯 Спеціалізація", "🎯 Змінити спеціалізацію",
+        "🔔 Нагадування", "🔔 Увімкнути/вимкнути нагадування",
+        "📜 Історія",
+        # Нагадування
+        "➕ Створити", "➕ Створити нагадування",
+        "📋 Список", "📋 Мої нагадування",
+        # Спеціалізації
+        "💻 IT", "💻 Інформаційні технології",
+        "🏥 Медицина",
+        "⚖️ Право",
+        "💰 Економіка",
+        "🎓 Педагогіка",
+        "🔬 Природничі науки",
+        "📝 Інша", "📝 Інша спеціалізація",
+        # Швидкі дії
+        "💬 Інше питання"
+    ]
+    
+    # Якщо це кнопка меню, не обробляємо як питання
+    if user_message in menu_buttons:
+        return
+    
+    # Обробка привітань та простих фраз
+    greetings = ["привіт", "вітаю", "добрий день", "доброго дня", "добрий вечір", 
+                "доброго вечора", "доброго ранку", "добрий ранок", "hello", "hi"]
+    
+    # Обробка питань про стан справ
+    how_are_you = ["як справи", "як справи?", "як ти", "як поживаєш", "що нового"]
+    
+    # Обробка емоційних повідомлень
+    emotional_phrases = {
+        "переживаю": "Розумію, що вступ може викликати хвилювання 😔\n\nАле не хвилюйся! Я допоможу тобі з усім необхідним. Задай питання про документи, спеціальності або вступну кампанію - разом все зробимо! 💪",
+        "хвилююсь": "Розумію твоє хвилювання 😌\n\nВступ - це важливий крок, але ти не один! Я допоможу з усіма питаннями про ХДУ. Що тебе найбільше хвилює? 📚",
+        "страшно": "Розумію, що це може бути страшно 😟\n\nАле пам'ятай - багато абітурієнтів проходять через це. Я допоможу тобі підготуватися до вступу до ХДУ. З чого почнемо? 💪",
+        "нервую": "Розумію твою нервозність 😰\n\nДавай разом розберемося з усім необхідним для вступу до ХДУ. Задай питання - я допоможу! 📝",
+        "сумно": "Розумію 😔\n\nЯкщо хочеш поговорити про вступ до ХДУ або маєш питання - я тут, щоб допомогти! 💙",
+        "добре": "Чудово! 😊\n\nРадий, що у тебе все добре. Чим можу допомогти з вступом до ХДУ? 📚",
+        "погано": "Шкода, що у тебе погано 😔\n\nЯкщо хочеш поговорити про вступ до ХДУ або маєш питання - я тут, щоб допомогти! 💙",
+    }
+    
+    user_lower = user_message.lower().strip()
+    
+    # Перевірка привітань
+    if any(greeting in user_lower for greeting in greetings):
+        await message.answer(
+            "Привіт! 👋\n\nЧим можу допомогти з вступом до ХДУ? "
+            "Можу відповісти на питання про документи, спеціальності, вступну кампанію та інше.",
+            reply_markup=get_main_menu()
+        )
+        return
+    
+    # Перевірка питань про стан справ
+    if any(phrase in user_lower for phrase in how_are_you):
+        await message.answer(
+            "Дякую, все добре! 😊\n\nГотовий допомогти тобі з вступом до ХДУ. "
+            "Задай питання про документи, спеціальності, вступну кампанію або інше! 📚",
+            reply_markup=get_main_menu()
+        )
+        return
+    
+    # Перевірка емоційних повідомлень
+    for emotion, response in emotional_phrases.items():
+        if emotion in user_lower:
+            await message.answer(response, reply_markup=get_main_menu())
+            return
+    
+    # ВСІ питання обробляються через OLLAMA - вона сама розпізнає галузі та формує відповіді
+    # Жодної жорсткої логіки розпізнавання - OLLAMA використовує покращений промпт для самостійного розпізнавання
+    
+    # Отримуємо текст повідомлення (якщо ще не визначено)
+    if not user_message:
+        user_message = message.text or ""
+    user_message_lower = user_message.lower()
+    
+    # Перевірка на питання про документи - якщо так, використовуємо правильний список
+    # Уникаємо хибних спрацьовувань на слово "подача" без згадки документів
+    document_keywords = [
+        'документ', 'документи', 'які документи', 'список документів',
+        'потрібні документи', 'що потрібно для вступу'
+    ]
+    is_document_question = any(word in user_message_lower for word in document_keywords)
+    
+    if is_document_question:
+        # Використовуємо правильний список документів з бази знань
+        from knowledge_base import get_documents_text
+        response = get_documents_text()
+        # Конвертуємо markdown в HTML
+        response = _convert_markdown_to_html(response)
+        
+        # Зберігаємо в історію
+        message_history_id = await db.save_message_history(message.from_user.id, user_message, response)
+        
+        # Inline-кнопка для звіту про помилку
+        reply_markup = get_feedback_keyboard(message_history_id) if message_history_id else None
+        
+        # Відправляємо відповідь
+        await message.answer(
+            f"💬 Відповідь:\n\n{response}",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+        return
+
+    # Спеціальна обробка для права: одразу відповідаємо, щоб уникнути OLLAMA-галюцинацій (121 тощо)
+    law_keywords = ['право', 'права', 'юрид', 'юриспруд', 'law']
+    if any(k in user_message_lower for k in law_keywords):
+        from tuition_helper import find_tuition_info
+        law_text = (
+            "<b>⚖️ Спеціальність Право (D8)</b>\n\n"
+            "• Рівні: бакалавр, магістр\n"
+            "• Форма: денна / заочна\n"
+            "• Факультет бізнесу і права\n"
+        )
+        tuition = find_tuition_info(specialty_name="право")
+        if tuition and "немає даних" not in tuition.lower():
+            law_text += "\n" + tuition
+        law_text += (
+            "\n\n📞 Приймальна комісія: +380 552 494375, +38 095 59 29 149, +38 096 61 30 516\n"
+            "📍 м. Херсон, вул. Університетська, 27"
+        )
+        message_history_id = await db.save_message_history(message.from_user.id, user_message, law_text)
+        await message.answer(
+            law_text,
+            reply_markup=get_feedback_keyboard(message_history_id),
+            parse_mode="HTML"
+        )
+        return
+
+    # ШВИДКА ОБРОБКА ПИТАНЬ ПРО ВАРТІСТЬ (без OLLAMA) — перенесена вище, щоб не перехоплював блок факультетів
+    # Перевірка на питання про конкретну галузь → одразу показуємо відповідний факультет
+    def detect_faculty_by_keywords(text: str) -> str | None:
+        keyword_map = [
+            # Бізнес і право
+            ([
+                "бізнес", "бізнесу", "економ", "право", "права", "юрид", "юриспруд", "юрист", "адвокат",
+                "менедж", "фінанс", "банківсь", "страхуван", "підприємниц", "адмініструван", "маркетинг"
+            ], "faculty_7"),
+            # ІТ / програмування
+            ([
+                "іт", "айті", "айти", "програмув", "програмн", "програміст", "комп'ют", "компют",
+                "інформат", "сисадмін", "data", "дата", "штучний інтелект", "машинне навчання",
+                "f2", "f3", "f6", "121"
+            ], "faculty_8"),
+            # Медицина / здоров'я
+            ([
+                "медиц", "медичн", "медфак", "фармац", "терап", "реабіліт", "ерготерап", "здоров",
+                "фізична терап", "ерго", "медицина", "медик"
+            ], "faculty_3"),
+            # Природничі
+            ([
+                "біолог", "біо", "еколог", "географ", "гео", "хім", "фізик", "природнич", "астрон", "науки про землю"
+            ], "faculty_4"),
+            # Спорт
+            ([
+                "спорт", "спортив", "фізкульт", "фіз вих", "фізична культура", "фк", "олімп"
+            ], "faculty_5"),
+            # Педагогіка / освіта
+            ([
+                "педагог", "дошкіль", "початков", "логопед", "олігофрен", "середня освіта", "вчитель",
+                "учитель", "освіта", "методика", "педфак"
+            ], "faculty_6"),
+            # Психологія / соціальні
+            ([
+                "психолог", "соціолог", "істор", "соц", "суспільн", "соціальна робота", "археолог", "психологія"
+            ], "faculty_2"),
+            # Філологія / мистецтва / журналістика
+            ([
+                "філолог", "філфак", "журналіст", "журфак", "мистецт", "культурол", "музич", "хореограф",
+                "образотвор", "германськ", "мов", "іноземні мови", "переклад", "мовознав", "літератур"
+            ], "faculty_1"),
+        ]
+        for keywords, faculty_id in keyword_map:
+            if any(k in text for k in keywords):
+                return faculty_id
+        return None
+
+    faculty_id_match = detect_faculty_by_keywords(user_message_lower)
+    if faculty_id_match:
+        from knowledge_base import get_faculty_specialties
+        specialties = get_faculty_specialties(faculty_id_match)
+
+        message_history_id = await db.save_message_history(message.from_user.id, user_message, specialties)
+
+        await message.answer(
+            specialties,
+            reply_markup=get_feedback_keyboard(message_history_id),
+            parse_mode="HTML"
+        )
+        return
+
+    # Перевірка на питання про факультети - відповідаємо одразу з клавіатурою
+    is_faculty_question = any(word in user_message_lower for word in [
+        'факультет', 'факультети', 'які є факультети', 'список факультетів'
+    ])
+
+    if is_faculty_question:
+        from knowledge_base import get_faculties_list
+        faculties = get_faculties_list()
+        faculties_text_lines = ["📚 Факультети ХДУ:"]
+        faculties_text_lines.extend([f"• {item['name']}" for item in faculties])
+        faculties_text_lines.append("Обери факультет, щоб побачити спеціальності 🎓")
+        faculties_text = "\n".join(faculties_text_lines)
+
+        # Зберігаємо в історію і отримуємо id
+        message_history_id = await db.save_message_history(message.from_user.id, user_message, faculties_text)
+
+        # Відправляємо з inline-клавіатурою факультетів + кнопкою звіту
+        await message.answer(
+            faculties_text,
+            reply_markup=get_faculties_keyboard(report_id=message_history_id)
+        )
+        return
+    
+    # ШВИДКА ОБРОБКА ПИТАНЬ ПРО ВАРТІСТЬ (без OLLAMA)
+    tuition_keywords = ['вартість', 'ціна', 'скільки коштує', 'оплата', 'коштує навчання', 'тарифи', 'скільки коштує навчання']
+    if any(k in user_message_lower for k in tuition_keywords):
+        from tuition_helper import find_tuition_info, extract_specialty_from_message
+        
+        specialty_name, specialty_code = extract_specialty_from_message(user_message)
+        
+        # Якщо не знайшли у поточному питанні — пробуємо з попередніх
+        if not specialty_name and not specialty_code:
+            context_prev = await db.get_recent_messages(message.from_user.id, limit=3)
+            if context_prev is None:
+                context_prev = []
+            for ctx in context_prev:
+                prev_user = (ctx["user_message"] or "")
+                sn, sc = extract_specialty_from_message(prev_user)
+                if sn or sc:
+                    specialty_name, specialty_code = sn, sc
+                    break
+        
+        # Нормалізуємо спеціальність (додаємо поширені відмінки)
+        if specialty_name and specialty_name.lower() == "соціологія":
+            specialty_name = "соціологія"
+        if specialty_name and specialty_name.lower() == "право":
+            specialty_name = "право"
+        
+        if specialty_name or specialty_code:
+            tuition_info = find_tuition_info(specialty_name=specialty_name, specialty_code=specialty_code)
+            if tuition_info and "немає даних" not in tuition_info.lower():
+                response = f"💰 <b>Вартість навчання</b>\n\n{tuition_info}\n\n📞 Приймальна комісія: +380 552 494375, +38 095 59 29 149, +38 096 61 30 516"
+            else:
+                response = ("На жаль, не знайшов точну вартість для цієї спеціальності.\n"
+                            "Уточни в приймальній комісії ХДУ: +380 552 494375, +38 095 59 29 149, +38 096 61 30 516.")
+        else:
+            response = ("Назви спеціальність або її код (наприклад, 121, F2, F3), "
+                        "щоб показати точну вартість навчання. Для довідки: +380 552 494375.")
+        
+        message_history_id = await db.save_message_history(message.from_user.id, user_message, response)
+        await message.answer(
+            response,
+            reply_markup=get_feedback_keyboard(message_history_id),
+            parse_mode="HTML"
+        )
+        return
+
+    # Показуємо індикатор набору
+    bot_message = await message.answer("🤔 Думаю...")
+    
+    try:
+        # Отримуємо контекст попередніх повідомлень
+        context = await db.get_recent_messages(message.from_user.id, limit=3)
+        # Перевіряємо, чи контекст не None та не порожній
+        if context is None:
+            context = []
+        context_list = [
+            {"user_message": msg["user_message"], "bot_response": msg["bot_response"]}
+            for msg in context
+        ]
+        
+        # Перевірка на питання про вступ - використовуємо спеціальну обробку
+        admission_keywords = [
+            "правила вступу", "вступ 2026", "вступна кампанія 2026",
+            "порядок вступу", "правила прийому", "правила прийому 2026",
+            "кампанія 2026", "нмт", "траєкторії вступу"
+        ]
+        is_admission_question = any(kw in user_message_lower for kw in admission_keywords)
+        
+        # Генеруємо відповідь через OLLAMA
+        # region agent log
+        _agent_log(
+            hypothesis_id="H0",
+            location="handlers.py:chat_handler:before_generate",
+            message="calling generate_response",
+            data={"user_message": user_message[:200], "context_count": len(context_list)}
+        )
+        # endregion
+        response = await ollama.generate_response(user_message, context_list)
+        
+        # Перевіряємо, чи отримали відповідь
+        if not response or len(response.strip()) == 0:
+            # Якщо це питання про вступ - використовуємо fallback
+            if is_admission_question:
+                from knowledge_base import get_admission_2026_info
+                info = get_admission_2026_info()
+                if info:
+                    response = _format_admission_2026(info)
+                else:
+                    response = "Вибач, не вдалося отримати відповідь. Спробуй переформулювати питання або звернися до приймальної комісії ХДУ за телефоном +380 552 494375."
+            else:
+                response = "Вибач, не вдалося отримати відповідь. Спробуй переформулювати питання або звернися до приймальної комісії ХДУ за телефоном +380 552 494375."
+        
+        # Додаткова перевірка для питань про вступ
+        if is_admission_question and ("не вдалося" in response.lower() or len(response.strip()) < 50):
+            from knowledge_base import get_admission_2026_info
+            info = get_admission_2026_info()
+            if info:
+                response = _format_admission_2026(info)
+        
+        # Обмежуємо довжину повідомлення (Telegram має ліміт 4096 символів)
+        MAX_MESSAGE_LENGTH = 4000  # Залишаємо місце для заголовка та інших текстів
+        
+        # Зберігаємо повну відповідь в історію та отримуємо ID
+        full_response = response
+        message_history_id = await db.save_message_history(message.from_user.id, user_message, full_response)
+        
+        # Якщо відповідь занадто довга, обрізаємо її
+        if len(response) > MAX_MESSAGE_LENGTH:
+            response = response[:MAX_MESSAGE_LENGTH] + "\n\n... (повідомлення обрізано, задай уточнююче питання)"
+        
+        # Обробка відповіді через ResponseService (валідація, форматування, виправлення)
+        response, is_valid = response_service.process_response(response, user_message)
+        
+        # Якщо відповідь не валідна - використовуємо резервну відповідь
+        if not is_valid:
+            response = response_service._get_fallback_response(user_message)
+
+        # Фільтруємо технічні фрази та помилки
+        import re
+        # OLLAMA сама перевіряє орфографію через промпт
+        
+        # СПЕЦІАЛЬНА ОБРОБКА: Питання про вартість навчання
+        # ВАЖЛИВО: Перевіряємо ТІЛЬКИ питання, які явно про вартість
+        # Не тригеримо на просто "спеціальність" без контексту вартості
+        user_message_lower = user_message.lower()
+        # Перевіряємо, чи є код спеціальності (121, F6, A4.11, А4.11 тощо) - це теж питання про вартість
+        # Розширений список кодів та варіантів питань - розпізнаємо БУДЬ-ЯКІ коди
+        # 3-значні коди (100-999, виключаючи роки 2000-2099)
+        # Коди з літерами (A-Z + цифра)
+        # Коди з галузями (A4.11, B2.3, А4.11 тощо)
+        has_specialty_code = bool(re.search(
+            r'\b(121|f6|f2|f3|код\s+\d{3}|код\s+[a-z]\d+|код\s+[a-z]\d+\.\d+|код\s+[а-я]\d+\.\d+|спеціальність\s+\d{3}|спеціальність\s+[a-z]\d+|спеціальність\s+[a-z]\d+\.\d+|спеціальність\s+[а-я]\d+\.\d+|на\s+\d{3}|на\s+[a-z]\d+|на\s+[a-z]\d+\.\d+|на\s+[а-я]\d+\.\d+|\d{3}|[a-z]\d+|[a-z]\d+\.\d+|[а-я]\d+\.\d+)\b',
+            user_message_lower,
+            re.IGNORECASE
+        ))
+        # Додаткова перевірка: чи це дійсно код (не рік, не телефон тощо)
+        if has_specialty_code:
+            # Перевіряємо, чи є 3-значне число, яке не є роком
+            year_match = re.search(r'\b(20\d{2})\b', user_message_lower)
+            if year_match:
+                # Якщо є рік, перевіряємо, чи є інші 3-значні коди
+                other_codes = re.findall(r'\b(\d{3})\b', user_message_lower)
+                if len(other_codes) == 1 and other_codes[0].startswith('20'):
+                    # Якщо тільки рік - не вважаємо це кодом спеціальності
+                    has_specialty_code = False
+        # Перевіряємо фрази типу "А НА 121?", "А НА F6?" (продовження попереднього питання про вартість)
+        is_continuation_question = bool(re.search(
+            r'^(а|а на|а щодо|а про|а по)\s+',
+            user_message_lower
+        )) and has_specialty_code
+        # Перевіряємо, чи є код у контексті вартості (будь-який 3-значний, з літерою або з галуззю)
+        has_code_with_tuition = bool(re.search(
+            r'(вартість|ціна|коштує|оплата).*?(\d{3}|[a-z]\d+|[a-z]\d+\.\d+|[а-я]\d+\.\d+)',
+            user_message_lower,
+            re.IGNORECASE
+        ))
+        is_tuition_question = (
+            any(word in user_message_lower for word in ['вартість', 'ціна', 'скільки коштує', 'оплата', 'коштує навчання']) or
+            ('спеціальність' in user_message_lower and any(word in user_message_lower for word in ['вартість', 'ціна', 'коштує', 'оплата'])) or
+            has_specialty_code or  # Якщо є код спеціальності - це питання про вартість
+            is_continuation_question or  # Якщо це продовження питання з кодом спеціальності
+            has_code_with_tuition  # Якщо код згадано разом зі словами про вартість
+        )
+        
+        # Автоматичний пошук інформації про вартість для будь-якої спеціальності
+        if is_tuition_question:
+            from tuition_helper import find_tuition_info, extract_specialty_from_message
+            
+            # Витягуємо назву спеціальності та код з повідомлення
+            specialty_name, specialty_code = extract_specialty_from_message(user_message)
+            
+            # Спроба визначити спеціальність/факультет із попередніх повідомлень, якщо зараз не вказано
+            def detect_faculty_by_keywords(text: str) -> str | None:
+                keyword_map = [
+                    # Бізнес і право
+                    (["бізнес", "економ", "право", "юриспруд", "менедж", "фінанс", "банківсь", "страхуван", "підприємниц", "адмініструван"], "faculty_7"),
+                    # ІТ / програмування
+                    (["іт", "програмув", "програмн", "комп'ют", "компют", "інформат", "f2", "f3", "f6", "121"], "faculty_8"),
+                    # Медицина / здоров'я
+                    (["медиц", "медичн", "фармац", "терап", "реабіліт", "ерготерап"], "faculty_3"),
+                    # Природничі
+                    (["біолог", "еколог", "географ", "хім", "фізик", "природнич"], "faculty_4"),
+                    # Спорт
+                    (["спорт", "фізкульт", "фіз вих", "фізична культура"], "faculty_5"),
+                    # Педагогіка / освіта
+                    (["педагог", "дошкіль", "початков", "логопед", "олігофрен", "середня освіта", "вчитель"], "faculty_6"),
+                    # Психологія / соціальні
+                    (["психолог", "соціолог", "істор", "соц", "суспільн"], "faculty_2"),
+                    # Філологія / мистецтва / журналістика
+                    (["філолог", "журналіст", "мистецт", "культурол", "музич", "хореограф", "образотвор", "германськ", "мов"], "faculty_1"),
+                ]
+                for keywords, faculty_id in keyword_map:
+                    if any(k in text for k in keywords):
+                        return faculty_id
+                return None
+
+            faculty_id_match = None
+            if (not specialty_name) and (not specialty_code) and context_list:
+                for ctx in context_list:
+                    prev_user = (ctx.get("user_message") or "").lower()
+                    prev_sn, prev_sc = extract_specialty_from_message(prev_user)
+                    if prev_sn or prev_sc:
+                        specialty_name = prev_sn
+                        specialty_code = prev_sc
+                        break
+                    fid = detect_faculty_by_keywords(prev_user)
+                    if fid:
+                        faculty_id_match = fid
+                        break
+
+            # Якщо знайдено код, але не знайдено назву - використовуємо код для пошуку
+            if specialty_code and not specialty_name:
+                # Код вже буде конвертовано в назву в find_tuition_info
+                pass
+            
+            # Якщо відповідь порожня, некоректна або не містить інформації про вартість
+            # АБО якщо відповідь містить інформацію про іншу спеціальність
+            response_lower = response.lower() if response else ""
+            has_tuition_info = any(word in response_lower for word in ['грн', 'гривень', 'місяць', 'семестр', 'рік'])
+            
+            # Перевіряємо, чи відповідь містить правильну спеціальність
+            correct_specialty_in_response = False
+            if specialty_name:
+                # Створюємо словник ключових слів для кожної спеціальності
+                from tuition_helper import extract_specialty_from_message
+                
+                # Отримуємо ключові слова для перевірки з повного списку
+                specialty_check_keywords = {
+                    "психологія": ["психолог", "психологія"],
+                    "інформаційні системи та технології": ["інформаційні системи", "інформаційні технології"],
+                    "інженерія програмного забезпечення": ["інженерія програмного", "програмне забезпечення"],
+                    "комп'ютерні науки": ["комп'ютерні науки"],
+                    "право": ["право", "юриспруденція"],
+                    "економіка": ["економіка"],
+                    "менеджмент": ["менеджмент"],
+                    "журналістика": ["журналістика"],
+                    "медицина": ["медицина", "медик"],
+                    "фармація": ["фармація"],
+                    "туризм та рекреація": ["туризм"],
+                    "готельно-ресторанна справа": ["готельно-ресторанна", "готель"],
+                    "географія та регіональні студії": ["географія"],
+                    "соціологія": ["соціологія"],
+                    "фізична терапія": ["фізична терапія"],
+                    "фізична реабілітація": ["фізична реабілітація"],
+                    "біологія та біохімія": ["біологія", "біохімія"],
+                    "екологія": ["екологія"],
+                    "хімія": ["хімія"],
+                    "фізика та астрономія": ["фізика", "астрономія"],
+                    "дошкільна освіта": ["дошкільна освіта"],
+                    "початкова освіта": ["початкова освіта"],
+                    "логопедія": ["логопедія"],
+                    "образотворче мистецтво": ["образотворче мистецтво"],
+                    "музичне мистецтво": ["музичне мистецтво"],
+                    "хореографія": ["хореографія"],
+                    "культурологія": ["культурологія"],
+                    "історія та археологія": ["історія", "археологія"],
+                    "філологія": ["філологія"],
+                    "фінанси, банківська справа та страхування": ["фінанси", "банківська"],
+                    "публічне управління та адміністрування": ["публічне управління"],
+                    "підприємництво та торгівля": ["підприємництво"],
+                    "соціальна робота та консультування": ["соціальна робота"],
+                    "фізична культура і спорт": ["фізична культура"],
+                }
+                
+                # Перевіряємо, чи відповідь містить правильну спеціальність
+                if specialty_name.lower() in specialty_check_keywords:
+                    correct_specialty_in_response = any(
+                        keyword in response_lower 
+                        for keyword in specialty_check_keywords[specialty_name.lower()]
+                    )
+                else:
+                    # Якщо спеціальність не в списку, перевіряємо частковий збіг
+                    specialty_name_lower = specialty_name.lower()
+                    correct_specialty_in_response = specialty_name_lower in response_lower or any(
+                        word in response_lower 
+                        for word in specialty_name_lower.split() 
+                        if len(word) > 4
+                    )
+                
+                # ДОДАТКОВА ПЕРЕВІРКА: чи відповідь містить інші спеціальності (неправильні)
+                # Якщо знайдено іншу спеціальність - це помилка
+                other_specialties_found = False
+                for other_spec, other_keywords in specialty_check_keywords.items():
+                    if other_spec != specialty_name.lower():
+                        if any(keyword in response_lower for keyword in other_keywords):
+                            # Перевіряємо, чи це не частина правильної спеціальності
+                            if not any(keyword in response_lower for keyword in specialty_check_keywords.get(specialty_name.lower(), [])):
+                                other_specialties_found = True
+                                break
+                
+                # Якщо знайдено іншу спеціальність - вважаємо відповідь некоректною
+                if other_specialties_found:
+                    correct_specialty_in_response = False
+
+            # Якщо спеціальність не визначена, але є факультет з попереднього запиту — показуємо вартість усіх спец. факультету
+            if (not specialty_name and not specialty_code) and faculty_id_match:
+                faculty_specialties_map = {
+                    "faculty_7": [  # Бізнес і право
+                        "економіка", "менеджмент", "фінанси, банківська справа та страхування",
+                        "підприємництво та торгівля", "право", "публічне управління та адміністрування",
+                        "туризм та рекреація", "готельно-ресторанна справа"
+                    ],
+                    "faculty_8": [  # ІТ
+                        "інженерія програмного забезпечення", "комп'ютерні науки", "інформаційні системи та технології"
+                    ],
+                    "faculty_3": [  # Медицина/здоров'я
+                        "фізична терапія, ерготерапія", "соціальна робота та консультування",
+                        "медицина", "фізична реабілітація", "фармація"
+                    ],
+                    "faculty_4": [  # Природничі
+                        "біологія та біохімія", "екологія", "географія та регіональні студії",
+                        "хімія", "фізика та астрономія"
+                    ],
+                    "faculty_5": [  # Спорт
+                        "фізична культура і спорт"
+                    ],
+                    "faculty_6": [  # Педагогіка / освіта
+                        "дошкільна освіта", "початкова освіта", "спеціальна освіта",
+                        "середня освіта (історія)", "середня освіта (біологія)",
+                        "середня освіта (географія)", "середня освіта (хімія)",
+                        "середня освіта (українська мова і література)",
+                        "середня освіта (англійська мова)", "середня освіта (німецька мова)",
+                        "середня освіта (іспанська мова)", "середня освіта (математика)",
+                        "середня освіта (фізика та астрономія)", "середня освіта (інформатика)",
+                        "фізична культура і спорт"
+                    ],
+                    "faculty_2": [  # Психологія / соц
+                        "психологія", "соціологія", "історія та археологія", "журналістика"
+                    ],
+                    "faculty_1": [  # Філологія / мистецтва
+                        "філологія", "журналістика", "культурологія та музеєзнавство",
+                        "хореографія", "музичне мистецтво", "образотворче мистецтво"
+                    ],
+                }
+                specs = faculty_specialties_map.get(faculty_id_match, [])
+                tuition_blocks = []
+                for spec in specs:
+                    info = find_tuition_info(specialty_name=spec)
+                    if info and "немає даних" not in info.lower():
+                        tuition_blocks.append(info)
+                if tuition_blocks:
+                    response = "\n\n".join(tuition_blocks)
+                    has_tuition_info = True
+                    correct_specialty_in_response = True
+            
+            # Замінюємо відповідь ТІЛЬКИ якщо це питання про вартість:
+            # 1. Відповідь порожня або некоректна
+            # 2. Відповідь не містить інформації про вартість
+            # 3. Відповідь містить інформацію про іншу спеціальність (якщо була визначена спеціальність)
+            # OLLAMA сама розпізнає та фільтрує інші університети через промпт
+            should_replace = False
+            
+            if not response or len(response.strip()) < 50 or 'не вдалося' in response_lower:
+                # Відповідь порожня або некоректна - замінюємо
+                should_replace = True
+            elif not has_tuition_info:
+                # Відповідь не містить інформації про вартість - замінюємо
+                should_replace = True
+            elif specialty_name and not correct_specialty_in_response:
+                # Відповідь про іншу спеціальність - замінюємо ТІЛЬКИ якщо це питання про вартість конкретної спеціальності
+                should_replace = True
+            
+            if should_replace:
+                # Автоматично знаходимо інформацію про вартість
+                tuition_info = find_tuition_info(specialty_name, specialty_code)
+                if tuition_info:
+                    response = tuition_info
+        
+        # КРОК 2: Перевірка на незрозумілі тексти (латиниця + кирилиця, незрозумілі слова)
+        # Якщо відповідь містить багато незрозумілих символів або слів - замінюємо на стандартну відповідь
+        unclear_patterns = [
+            r'[A-Z]{3,}[А-Яа-я]|[А-Яа-я][A-Z]{3,}',
+            r'ЗAZNALAGIDDO|ОТПОВИДИ|КРЕДИТЕЛЯОМ|ЕНТРЕЗА|ПРЯМУ ВІДПОВІДЕЙ',
+            r'Витрання до користувача',
+            r'Пішіть за',
+            r'Поповнітьтесь',
+            r'Використовуйте інтернет',
+            r'Кращий шлях до успіху',
+            r'Збережіть інформацію',
+            r'Поповнітьтесь інформацією'
+        ]
+        
+        has_unclear_text = any(re.search(pattern, response, re.IGNORECASE) for pattern in unclear_patterns)
+        
+        if has_unclear_text:
+            # Якщо питання про документи - даємо стандартну відповідь
+            if any(word in user_message.lower() for word in ['документ', 'подати', 'подача', 'як подати']):
+                response = """Для подачі документів до ХДУ потрібно:
+
+• Заява (за встановленою формою ХДУ)
+• Документ про освіту (оригінал або копія)
+• Додаток до документа про освіту
+• Фото 3x4 (4 шт.)
+• Копія паспорта (1-2 сторінки)
+• Копія ідентифікаційного коду
+• Медична довідка (форма 086-о)
+• Результати ЗНО (сертифікат)
+• Документи про особливі права (якщо є)
+
+Документи подаються згідно з графіком МОН України. Для уточнення деталей звернися до приймальної комісії ХДУ:
+📞 +380 552 494375, +38 095 59 29 149, +38 096 61 30 516"""
+            else:
+                response = "Вибач, не вдалося сформувати відповідь. Переформулюй, будь ласка, питання або звернися до приймальної комісії ХДУ за телефоном +380 552 494375."
+        
+        # Видаляємо технічні фрази
+        response = re.sub(r'Працюємо над відповідями.*?формату:', '', response, flags=re.DOTALL)
+        response = re.sub(r'Якщо бажєш додавати.*?формату:', '', response, flags=re.DOTALL)
+        response = re.sub(r'vuiчіться.*?формату:', '', response, flags=re.DOTALL)
+        response = re.sub(r'Текст для відповідей.*?відповідей\.', '', response, flags=re.DOTALL)
+        response = re.sub(r'В разі необхідності.*?відповідей\.', '', response, flags=re.DOTALL)
+        response = re.sub(r'заповнюйте поле.*?відповідей\.', '', response, flags=re.DOTALL)
+        
+        # Видаляємо незрозумілі фрази (без дубльованих)
+        unclear_phrases = [
+            (r'ЗAZNALAGIDDO[^.]*\.', ''),
+            (r'ОТПОВИДИ[^.]*\.', ''),
+            (r'КРЕДИТЕЛЯОМ[^.]*\.', ''),
+            (r'ЕНТРЕЗА[^.]*\.', ''),
+            (r'ПРЯМУ ВІДПОВІДЕЙ[^.]*\.', ''),
+            (r'Вітаю Вас до звичай[^.]*\.', ''),
+            (r'звичайного зверненья[^.]*\.', ''),
+            (r'Витрання до користувача[^.]*\.', ''),
+            (r'Пішіть за ЗНО[^.]*\.', 'Подайте документи на ЗНО.'),
+            (r'Поповнітьтесь[^.]*\.', 'Ознайомтеся.'),
+            (r'Використовуйте інтернет[^.]*\.', ''),
+            (r'Кращий шлях до успіху[^.]*\.', ''),
+            (r'Збережіть інформацію[^.]*\.', ''),
+        ]
+        for pattern, replacement in unclear_phrases:
+            response = re.sub(pattern, replacement, response, flags=re.IGNORECASE)
+        
+        # Видаляємо неправильні фрази
+        response = re.sub(r'Витраж в університет!', '', response, flags=re.IGNORECASE)
+        response = re.sub(r'Здравствуйте! Вітаем вам до[^!]*!', 'Вітаю!', response, flags=re.DOTALL)
+        response = re.sub(r'Вітаем вам до[^!]*!', 'Вітаю!', response, flags=re.DOTALL)
+        
+        # Видаляємо російські фрази
+        response = re.sub(r'Почему вам потрібна.*?\?', '', response, flags=re.IGNORECASE)
+        response = re.sub(r'Вот інформацію про ХДУ:', 'Ось інформація про ХДУ:', response, flags=re.IGNORECASE)
+        response = re.sub(r'Вот інформацію:', 'Ось інформація:', response, flags=re.IGNORECASE)
+        
+        # Очищаємо від зайвих порожніх рядків
+        response = re.sub(r'\n{3,}', '\n\n', response)
+        response = response.strip()
+        
+        # КРОК 3: ФІНАЛЬНА ПЕРЕВІРКА перед відправкою - якщо відповідь містить незрозумілі слова або занадто багато помилок - замінюємо
+        unclear_patterns_list = [
+            r'[A-Z]{3,}[А-Яа-я]|[А-Яа-я][A-Z]{3,}',
+            r'ЗAZNALAGIDDO|ОТПОВИДИ|КРЕДИТЕЛЯОМ|ЕНТРЕЗА|ПРЯМУ ВІДПОВІДЕЙ',
+            r'звичайного зверненья',
+            r'Витрання до користувача',
+            r'Пішіть за',
+            r'Поповнітьтесь',
+            r'Використовуйте інтернет',
+            r'Кращий шлях до успіху',
+            r'Збережіть інформацію',
+            r'Поповнітьтесь інформацією'
+        ]
+        unclear_words_count = sum(len(re.findall(pattern, response, re.IGNORECASE)) for pattern in unclear_patterns_list)
+        
+        # Перевірка на наявність заборонених фраз
+        forbidden_phrases = [
+            'Витрання до користувача',
+            'Пішіть за',
+            'Поповнітьтесь',
+            'Використовуйте інтернет',
+            'Кращий шлях до успіху',
+            'Збережіть інформацію'
+        ]
+        
+        for phrase in forbidden_phrases:
+            if phrase.lower() in response.lower():
+                unclear_words_count += 5
+        
+        # Якщо знайдено багато помилок - замінюємо на стандартну відповідь
+        # АЛЕ: для питань про вартість - не блокуємо, якщо відповідь містить інформацію про вартість
+        # АЛЕ: для звичайних питань - не замінюємо, якщо відповідь не містить критичних помилок
+        if unclear_words_count > 0:
+            # Перевіряємо, чи відповідь про вартість містить корисну інформацію
+            has_tuition_info = is_tuition_question and any(word in response.lower() for word in [
+                'грн', 'гривень', 'місяць', 'семестр', 'рік', 'період', 'вартість', 'навчання'
+            ])
+            
+            # Перевіряємо, чи це питання про документи (лише явні згадки про документи)
+            is_document_question = any(word in user_message.lower() for word in [
+                'документ', 'документи', 'які документи', 'список документів',
+                'потрібні документи', 'що потрібно для вступу'
+            ])
+            
+            # Якщо це питання про вартість і відповідь містить інформацію про вартість - не блокуємо
+            if has_tuition_info:
+                # Тільки видаляємо незрозумілі слова, але не замінюємо всю відповідь
+                pass
+            elif is_document_question:
+                response = """Для подачі документів до ХДУ потрібно:
+
+• Заява (за встановленою формою ХДУ)
+• Документ про освіту (оригінал або копія)
+• Додаток до документа про освіту
+• Фото 3x4 (4 шт.)
+• Копія паспорта (1-2 сторінки)
+• Копія ідентифікаційного коду
+• Медична довідка (форма 086-о)
+• Результати ЗНО (сертифікат)
+• Документи про особливі права (якщо є)
+
+Документи подаються згідно з графіком МОН України. Для уточнення деталей звернися до приймальної комісії ХДУ:
+📞 +380 552 494375, +38 095 59 29 149, +38 096 61 30 516
+📍 м. Херсон, вул. Університетська, 27"""
+            # Для інших питань - замінюємо ТІЛЬКИ якщо є критичні помилки (незрозумілі слова)
+            # Якщо просто є помилки, але відповідь зрозуміла - не замінюємо
+            elif unclear_words_count >= 3:  # Тільки якщо багато критичних помилок
+                response = "Вибач, не вдалося сформувати коректну відповідь. Переформулюй, будь ласка, питання або звернися до приймальної комісії ХДУ за телефоном +380 552 494375."
+            # Якщо помилок мало або немає - залишаємо оригінальну відповідь від OLLAMA
+        
+        # КРОК 4: ФІНАЛЬНА ПЕРЕВІРКА ПЕРЕД ВІДПРАВКОЮ
+        # Перевіряємо тільки на незрозумілі технічні фрази
+        # OLLAMA сама розпізнає та фільтрує інші університети через промпт
+        final_check_patterns = [
+            r'Витрання', r'Пішіть за', r'Поповнітьтесь', r'Використовуйте інтернет',
+            r'Кращий шлях до успіху', r'Збережіть інформацію', r'Поповнітьтесь інформацією'
+        ]
+        
+        has_final_errors = any(re.search(pattern, response, re.IGNORECASE) for pattern in final_check_patterns)
+        
+        
+        # Перевіряємо, чи це питання про документи
+        is_document_question = any(word in user_message.lower() for word in [
+            'документ', 'подати', 'подача', 'як подати', 'де подати', 'куди подати',
+            'які документи', 'список документів', 'потрібні документи'
+        ])
+        
+        # Замінюємо відповідь ТІЛЬКИ якщо є критичні помилки
+        if has_final_errors:
+            # Якщо все ще є помилки або інші університети - замінюємо на стандартну відповідь
+            if is_tuition_question:
+                # Автоматично знаходимо інформацію про вартість для будь-якої спеціальності
+                from tuition_helper import find_tuition_info, extract_specialty_from_message
+                
+                specialty_name, specialty_code = extract_specialty_from_message(user_message)
+                tuition_info = find_tuition_info(specialty_name, specialty_code)
+                
+                if tuition_info:
+                    response = tuition_info
+                else:
+                    # Якщо не знайдено конкретну спеціальність - даємо загальну інформацію
+                    response = """Вартість навчання в ХДУ залежить від спеціальності, форми навчання та рівня освіти.
+
+<b>Орієнтовні тарифи 2025-2026:</b>
+
+<b>Бакалавр:</b>
+• Денна форма: від 3500 до 4605 грн/місяць
+• Заочна форма: 3500 грн/місяць
+
+<b>Магістр:</b>
+• Денна форма: від 4000 до 5511.90 грн/місяць
+• Заочна форма: 4000 грн/місяць
+
+Для уточнення точної вартості для конкретної спеціальності звернися до приймальної комісії ХДУ:
+📞 +380 552 494375, +38 095 59 29 149, +38 096 61 30 516"""
+            elif is_document_question:
+                response = """Для подачі документів до ХДУ потрібно:
+
+• Заява (за встановленою формою ХДУ)
+• Документ про освіту (оригінал або копія)
+• Додаток до документа про освіту
+• Фото 3x4 (4 шт.)
+• Копія паспорта (1-2 сторінки)
+• Копія ідентифікаційного коду
+• Медична довідка (форма 086-о)
+• Результати ЗНО (сертифікат)
+• Документи про особливі права (якщо є)
+
+Документи подаються згідно з графіком МОН України. Для уточнення деталей звернися до приймальної комісії ХДУ:
+📞 +380 552 494375, +38 095 59 29 149, +38 096 61 30 516
+📍 м. Херсон, вул. Університетська, 27"""
+            # Для інших питань (не про вартість, не про документи) - замінюємо ТІЛЬКИ якщо є критичні помилки
+            # Якщо відповідь зрозуміла, навіть з невеликими помилками - не замінюємо
+            elif has_final_errors:
+                # Тільки якщо є критичні помилки (незрозумілі слова, інші університети)
+                response = "Вибач, не вдалося сформувати коректну відповідь. Переформулюй, будь ласка, питання або звернися до приймальної комісії ХДУ за телефоном +380 552 494375."
+        
+        # Конвертуємо markdown в HTML форматування
+        response = _convert_markdown_to_html(response)
+        
+        # Очищаємо від зайвих порожніх рядків після конвертації
+        response = re.sub(r'\n{3,}', '\n\n', response)
+        response = response.strip()
+        
+        # Видаляємо дублікати відповіді (якщо OLLAMA згенерував повторення)
+        # Перевіряємо, чи відповідь містить однакові речення кілька разів підряд
+        response_lines = response.split('\n')
+        seen_lines = set()
+        unique_lines = []
+        for line in response_lines:
+            line_stripped = line.strip()
+            if line_stripped and line_stripped not in seen_lines:
+                seen_lines.add(line_stripped)
+                unique_lines.append(line)
+            elif not line_stripped:
+                # Зберігаємо порожні рядки для форматування
+                unique_lines.append(line)
+        response = '\n'.join(unique_lines)
+        
+        # Видаляємо повторення цілих абзаців (якщо один і той самий текст повторюється)
+        paragraphs = response.split('\n\n')
+        seen_paragraphs = set()
+        unique_paragraphs = []
+        for para in paragraphs:
+            para_stripped = para.strip()
+            if para_stripped and para_stripped not in seen_paragraphs:
+                seen_paragraphs.add(para_stripped)
+                unique_paragraphs.append(para)
+        response = '\n\n'.join(unique_paragraphs)
+        
+        # Перевіряємо, чи відповідь OLLAMA про факультети/спеціальності - додаємо клавіатуру
+        # OLLAMA сама розпізнає питання про спеціальності через промпт і відповість про факультети
+        response_lower = response.lower()
+        is_faculties_response = any(keyword in response_lower for keyword in [
+            "8 факультетів", "оберіть факультет", "факультети хду", "факультет української",
+            "факультет психології", "медичний факультет", "факультет біології",
+            "факультет фізичного", "педагогічний факультет", "факультет бізнесу",
+            "факультет комп'ютерних", "є 8 факультетів", "в хду є"
+        ])
+        
+        # Формуємо повідомлення з правильним форматуванням (HTML)
+        message_text = f"💬 <b>Відповідь:</b>\n\n{response}\n\n💡 Можеш задати ще питання або натиснути '⬅️ Назад' для повернення до меню"
+        
+        # Якщо все ще занадто довго, обрізаємо ще більше
+        if len(message_text) > 4096:
+            # Обрізаємо відповідь так, щоб повідомлення вмістилося
+            available_length = 4096 - len("💬 <b>Відповідь:</b>\n\n\n💡 Можеш задати ще питання або натиснути '⬅️ Назад' для повернення до меню")
+            response = response[:available_length] + "\n\n... (повідомлення обрізано)"
+            message_text = f"💬 <b>Відповідь:</b>\n\n{response}\n\n💡 Можеш задати ще питання або натиснути '⬅️ Назад' для повернення до меню"
+        
+        # Визначаємо клавіатуру: якщо відповідь про факультети - додаємо клавіатуру вибору факультету
+        reply_markup = None
+        if is_faculties_response:
+            reply_markup = get_faculties_keyboard(report_id=message_history_id)
+        elif message_history_id:
+            reply_markup = get_feedback_keyboard(message_history_id)
+        
+        # Оновлюємо повідомлення з inline кнопками для оцінки або вибору факультету
+        await bot_message.edit_text(
+            message_text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        # Логуємо помилку для діагностики
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Помилка в chat_handler: {e}", exc_info=True)
+        
+        # Для помилок використовуємо answer замість edit_text
+        try:
+            await bot_message.delete()
+        except:
+            pass
+        
+        await message.answer(
+            f"❌ Вибач, сталася помилка при обробці питання.\n\n"
+            f"Деталі: {str(e)}\n\n"
+            "Спробуй ще раз або звернися до приймальної комісії ХДУ:\n"
+            "📞 +380 552 494375",
+            reply_markup=get_back_keyboard()
+        )
+
