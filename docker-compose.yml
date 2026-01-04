@@ -1,0 +1,113 @@
+name: admission-bot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: admission_bot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: admission_bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres123}
+      # Оптимізація PostgreSQL для зменшення навантаження
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    # Порт відкрито тільки для localhost (безпека)
+    # Якщо потрібен доступ ззовні - використовуйте SSH tunnel або VPN
+    ports:
+      - "127.0.0.1:5432:5432"  # Тільки локальний доступ
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=128MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=4MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+      -c max_connections=50
+      -c log_statement=none
+      -c log_duration=off
+      -c log_line_prefix=''
+      -c log_connections=on
+      -c log_disconnections=on
+      -c log_hostname=on
+      -c autovacuum=on
+      -c autovacuum_max_workers=2
+      -c autovacuum_naptime=30s
+      -c autovacuum_vacuum_threshold=50
+      -c autovacuum_analyze_threshold=50
+      -c autovacuum_vacuum_scale_factor=0.1
+      -c autovacuum_analyze_scale_factor=0.05
+      -c statement_timeout=30000
+      -c idle_in_transaction_session_timeout=60000
+    # Обмеження ресурсів для запобігання перевантаження сервера
+    # Примітка: deploy працює тільки в Docker Swarm mode
+    # Для звичайного docker-compose використовуйте docker run з --cpus та --memory
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bot-network
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: admission_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Перевизначення DB_HOST для Docker network
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=admission_bot
+      - DB_USER=postgres
+      - DB_PASSWORD=${DB_PASSWORD:-postgres123}
+      # OLLAMA URL - якщо OLLAMA на хост-машині, використовуємо host.docker.internal
+      # Якщо OLLAMA в іншому контейнері - вкажіть назву сервісу
+      - OLLAMA_API_URL=${OLLAMA_API_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      # Додаємо host.docker.internal для доступу до хост-машини (Windows/Mac)
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Монтуємо файли університету (якщо потрібно)
+      - ./university_files:/app/university_files:ro
+      # Монтуємо логи
+      - ./reports:/app/reports
+    networks:
+      - bot-network
+    # Автоматичне створення таблиць - виконується в main.py при db.connect()
+    # init_db.py потрібно запустити окремо для початкових даних (опціонально)
+
+  # Опціонально: OLLAMA в Docker (закоментовано, розкоментуйте якщо потрібно)
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: admission_bot_ollama
+  #   restart: unless-stopped
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  # ollama_data:  # Розкоментуйте якщо використовуєте OLLAMA в Docker
+
