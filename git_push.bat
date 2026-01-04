@@ -37,6 +37,12 @@ git commit -m "Version 1.4: Admin panel, DB optimizations, Docker update guide, 
 echo Створення гілки main...
 git branch -M main
 
+echo Отримання змін з GitHub (якщо є)...
+git pull origin main --allow-unrelated-histories --no-edit
+if %errorlevel% neq 0 (
+    echo Попередження: Не вдалося отримати зміни (можливо репозиторій порожній)
+)
+
 echo Завантаження на GitHub...
 echo УВАГА: Можливо знадобиться авторизація!
 git push -u origin main

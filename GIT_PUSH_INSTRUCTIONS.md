@@ -135,14 +135,53 @@ git remote remove origin
 git remote add origin https://github.com/Lexar522/Bot_telegram_KSU.git
 ```
 
-### Помилка: "failed to push some refs"
+### Помилка: "failed to push some refs" або "Updates were rejected" або "non-fast-forward"
 
 **Рішення:**
-Якщо в репозиторії вже є файли:
+
+**Варіант 1: Автоматичне виправлення (рекомендовано)**
 ```cmd
-git pull origin main --allow-unrelated-histories
+fix_push.bat
+```
+
+**Варіант 2: Вручну з merge**
+```cmd
+git fetch origin main
+git pull origin main --allow-unrelated-histories --no-edit
 git push -u origin main
 ```
+
+**Варіант 3: Вручну з rebase**
+```cmd
+git fetch origin main
+git pull --rebase origin main
+git push -u origin main
+```
+
+**Варіант 4: Force push (ОБЕРЕЖНО! Перезапише все на GitHub!)**
+```cmd
+force_push.bat
+```
+Або вручну:
+```cmd
+git push -f origin main
+```
+
+⚠️ **Увага:** Force push видалить всі зміни на GitHub! Використовуйте тільки якщо впевнені, що локальна версія правильна.
+
+**Якщо є конфлікти:**
+1. Перевірте статус:
+   ```cmd
+   git status
+   ```
+2. Відкрийте файли з конфліктами (позначені як "both modified")
+3. Вирішіть конфлікти вручну (видаліть маркери `<<<<<<<`, `=======`, `>>>>>>>`)
+4. Додайте виправлені файли:
+   ```cmd
+   git add .
+   git commit -m "Resolve merge conflicts"
+   git push -u origin main
+   ```
 
 ### Помилка: "Authentication failed"
 
