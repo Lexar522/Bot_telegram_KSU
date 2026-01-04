@@ -509,7 +509,8 @@ class OptimizedOllamaClient:
                 else:
                     logger.error(f"Error generating response: {e}")
         
-        return f"Вибач, не вдалося отримати відповідь. Спробуй переформулювати питання або звернися до приймальної комісії ХДУ за телефоном +380 552 494375."
+        from knowledge_base import get_admissions_committee_phones
+        return f"Вибач, не вдалося отримати відповідь. Спробуй переформулювати питання або звернися до приймальної комісії ХДУ:\n\n{get_admissions_committee_phones()}"
     
     async def generate_response_stream(
         self,
@@ -1020,7 +1021,7 @@ class OptimizedOllamaClient:
     def _get_admission_fallback(self, query: str) -> str:
         """Fallback відповідь для питань про вступ"""
         try:
-            from knowledge_base import get_admission_2026_info
+            from knowledge_base import get_admission_2026_info, get_admissions_committee_phones
             import json
             
             info = get_admission_2026_info()
@@ -1093,7 +1094,7 @@ class OptimizedOllamaClient:
                     if description:
                         parts.append(f"📝 {description}")
             
-            parts.append("\n📞 <b>Приймальна комісія ХДУ:</b> +380 552 494375, +38 095 59 29 149, +38 096 61 30 516")
+            parts.append(f"\n{get_admissions_committee_phones()}")
             
             result = "\n".join(parts)
             # Видаляємо HTML теги для fallback (якщо потрібно)
@@ -1125,6 +1126,8 @@ class OptimizedOllamaClient:
 • Дистанційне укладання угоди на навчання
 
 📞 <b>Приймальна комісія ХДУ:</b>
-+380 552 494375, +38 095 59 29 149, +38 096 61 30 516
+📱 +380 552 494375
+📱 +38 095 59 29 149
+📱 +38 096 61 30 516
 📍 м. Херсон, вул. Університетська, 27"""
 

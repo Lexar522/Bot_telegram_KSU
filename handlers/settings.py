@@ -15,18 +15,27 @@ router = Router()
 @router.message(F.text == "⚙️ Налаштування")
 async def settings_handler(message: Message):
     """Обробка налаштувань"""
-    user = await db.get_user(message.from_user.id)
-    specialization = user.get("specialization") if user else None
-    
-    text = "⚙️ <b>Налаштування</b>\n\n"
-    if specialization:
-        text += f"🎯 Твоя спеціалізація: {specialization}\n\n"
-    else:
-        text += "🎯 Спеціалізація не встановлена\n\n"
-    
-    text += "Оберіть опцію:"
-    
-    await message.answer(text, reply_markup=get_settings_keyboard(), parse_mode="HTML")
+    try:
+        user = await db.get_user(message.from_user.id)
+        specialization = user.get("specialization") if user else None
+        
+        text = "⚙️ <b>Налаштування</b>\n\n"
+        if specialization:
+            text += f"🎯 Твоя спеціалізація: {specialization}\n\n"
+        else:
+            text += "🎯 Спеціалізація не встановлена\n\n"
+        
+        text += "Оберіть опцію:"
+        
+        await message.answer(text, reply_markup=get_settings_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Помилка в settings_handler: {e}", exc_info=True)
+        await message.answer(
+            "❌ Сталася помилка при відкритті налаштувань. Спробуйте ще раз.",
+            reply_markup=get_main_menu(user_id=message.from_user.id)
+        )
 
 
 @router.message(F.text.in_(["🎯 Спеціалізація", "🎯 Змінити спеціалізацію"]))
@@ -75,7 +84,7 @@ async def set_specialization_handler(message: Message):
     await message.answer(
         f"✅ Спеціалізацію встановлено: {specialization}\n\n"
         "Тепер ти отримуватимеш більш персоналізовані поради!",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(user_id=message.from_user.id)
     )
 
 

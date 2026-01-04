@@ -4,19 +4,27 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
 venv/
+env/
 ENV/
 .venv
-
-# Environment variables (ПРИВАТНІ - НЕ КОМІТИТИ!)
-.env
-.env.*
-!.env.example
-.env.local
-.env.production
-.env.development
-*.env
 
 # IDE
 .vscode/
@@ -25,57 +33,28 @@ ENV/
 *.swo
 *~
 
-# Database
-*.db
-*.sqlite
-*.sqlite3
+# Environment variables
+.env
+.env.local
 
-# Logs (ПРИВАТНІ - можуть містити дані користувачів)
+# Logs
 *.log
-logs/
-reports/
-*.log.*
-error*.log
-debug*.log
+reports/*.log
+docker-logs.txt
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Project specific (документи університету - можуть бути приватними)
-*.docx
-*.doc
-*.pdf
-*.xlsx
-*.xls
-university_files/*
-!university_files/.gitkeep
-
 # Docker
-# .dockerignore - потрібен для Docker, тому додаємо в репозиторій
-
-# OLLAMA models (локальні файли - ігноруємо вміст, але зберігаємо структуру)
-ollama_models/*
-!ollama_models/.gitkeep
+.dockerignore
 
 # Temporary files
 *.tmp
-*.temp
 *.bak
-*.backup
+*.swp
 
-# Приватні та конфіденційні файли
-*secret*
-*private*
-*password*
-*.key
-*.pem
-*.p12
-*.cert
-*.crt
-config.local.*
-settings.local.*
-
-# Cursor/IDE debug logs
-.cursor/
-debug.log
+# Documentation files (temporary)
+FIX_DB_CONNECTION.md
+cleanup_db.py
+fix_conflict.ps1

@@ -61,13 +61,14 @@ class MetricsCollector:
             self.metrics["response_lengths"].pop(0)
             self.metrics["response_lengths"].append(len(response))
         
-        # Зберігаємо в БД для аналізу (асинхронно, не блокуємо)
-        try:
-            # Викликаємо асинхронно через create_task
-            import asyncio
-            asyncio.create_task(self._save_to_db(query, response, response_time, from_cache, question_type))
-        except Exception as e:
-            logger.warning(f"Помилка збереження метрик: {e}")
+        # ВИМКНЕНО: Збереження метрик в БД вимкнено для зменшення навантаження
+        # Метрики зберігаються тільки в пам'яті для статистики
+        # Розкоментуйте наступні рядки, якщо потрібно зберігати метрики в БД:
+        # try:
+        #     import asyncio
+        #     asyncio.create_task(self._save_to_db(query, response, response_time, from_cache, question_type))
+        # except Exception as e:
+        #     logger.warning(f"Помилка збереження метрик: {e}")
     
     def get_statistics(self) -> Dict:
         """Отримання статистики"""

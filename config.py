@@ -1,11 +1,20 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Перезавантажуємо .env файл
+load_dotenv(override=True)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0")
-ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR and ADMIN_ID_STR.strip() else 0
+# Конвертуємо ADMIN_ID в int, якщо можливо
+try:
+    ADMIN_ID = int(ADMIN_ID_STR.strip()) if ADMIN_ID_STR and ADMIN_ID_STR.strip() else 0
+except (ValueError, AttributeError):
+    ADMIN_ID = 0
+
+# Діагностичний вивід при завантаженні модуля (тільки якщо це не імпорт через main)
+if __name__ == "__main__" or "main" in str(os.sys.modules.get('__main__', '')):
+    print(f"[DEBUG] config.py loaded: ADMIN_ID={ADMIN_ID}, ADMIN_ID_STR='{ADMIN_ID_STR}'")
 
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
